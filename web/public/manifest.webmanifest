@@ -1,0 +1,9 @@
+{
+  "name": "Whimsy — cheap flights to wherever",
+  "short_name": "Whimsy",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#132250",
+  "theme_color": "#132250",
+  "icons": [{ "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}
