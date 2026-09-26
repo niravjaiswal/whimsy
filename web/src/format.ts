@@ -26,7 +26,8 @@ export function monthLabel(ym: string, long = false) {
   return long ? `${MONTHS[m - 1]} ${y}` : MONTHS[m - 1];
 }
 
-export function nextMonths(n = 10, from = new Date()) {
+/** Months a trip could depart in — the scanner looks 3+ weeks ahead. */
+export function nextMonths(n = 10, from = new Date(Date.now() + 21 * 86400_000)) {
   const out: string[] = [];
   for (let i = 0; i < n; i++) {
     const d = new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth() + i, 1));

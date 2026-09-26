@@ -18,6 +18,9 @@ const dealUrl = (d: DealRow) => `${config.publicUrl}/deal/${d.slug}`;
 
 export function buildMessage(deals: DealRow[], manageUrl: string): Message & { manageUrl: string } {
   const top = [...deals].sort((a, b) => b.score - a.score);
+  if (top.length === 0) {
+    return { title: 'Whimsy', body: '', url: `${config.publicUrl}/`, deals: top, manageUrl };
+  }
   if (top.length === 1) {
     const d = top[0];
     return {
@@ -70,7 +73,11 @@ export function renderEmail(msg: Message & { manageUrl: string }): { html: strin
     <tr><td style="background:linear-gradient(#132250,#8b7398 60%,#f6b877);padding:28px 28px 22px;color:#fff">
       <div style="font-size:14px;opacity:.8">Whimsy</div>
       <div style="font-size:24px;margin-top:6px">${esc(msg.title.replace(/^✈\s*/, ''))}</div></td></tr>
-    <tr><td style="padding:8px 28px"><table width="100%">${rows}</table></td></tr>
+    <tr><td style="padding:8px 28px">${
+      rows
+        ? `<table width="100%">${rows}</table>`
+        : '<p style="font-size:15px;color:#444;line-height:1.5;margin:18px 0">We’re scanning thousands of routes around the clock. The moment a fare that matches your alert drops well below normal, you’ll hear from us.</p>'
+    }</td></tr>
     <tr><td style="padding:18px 28px 26px;font-size:12px;color:#888">Fares move fast — prices were verified moments before this email.
       <br><a href="${esc(msg.manageUrl)}" style="color:#888">Manage or pause this alert</a></td></tr>
   </table></td></tr></table></body></html>`;

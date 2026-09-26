@@ -95,6 +95,13 @@ describe('api', () => {
     expect(got.alert.channels.push).toBe(true);
   });
 
+  it('does not create an alert when its push subscription is invalid', async () => {
+    const { db, json } = setup();
+    const res = await json('/alerts', { method: 'POST', body: JSON.stringify({ channels: { push: true }, pushSubscription: { endpoint: 'nope' } }) });
+    expect(res.status).toBe(400);
+    expect((db.prepare('SELECT COUNT(*) n FROM alerts').get() as any).n).toBe(0);
+  });
+
   it('reports stats', async () => {
     const { db, json } = setup();
     addRoute(db);

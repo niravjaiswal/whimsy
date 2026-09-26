@@ -57,6 +57,10 @@ export function seedRoutes(db: DB, originCodes?: string[]): number {
     added += Number(res.changes);
   });
   db.exec('COMMIT');
+  // Stagger where each unscanned route starts in its date rotation so the first
+  // sweep probes the whole 3-week → 7-month window, not just the nearest slot.
+  const slots = LEAD_WEEKS.length * 3;
+  db.prepare(`UPDATE routes SET sample_cursor = abs(random()) % ${slots} WHERE scan_count = 0 AND sample_cursor = 0`).run();
   if (originCodes) {
     // Disable routes whose origin was removed from the configured list.
     const placeholders = originCodes.map(() => '?').join(',');

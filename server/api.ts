@@ -12,7 +12,7 @@ import {
   type Alert,
 } from './alerts.js';
 import { config } from './config.js';
-import type { DB } from './db.js';
+import { tx, type DB } from './db.js';
 import { TIER_RANK, type DealRow, type Tier } from './deals.js';
 import { buildMessage, sendEmail, sendNtfy, sendPush, sendWebhook, vapidKeys } from './notify/channels.js';
 import { manageUrl } from './notify/notifier.js';
@@ -263,12 +263,15 @@ export function createApi({ db, scanner, bus }: AppDeps) {
   api.post('/alerts', async (c) => {
     if (!writeLimit(clientIp(c))) return c.json({ error: 'Too many requests — try again later' }, 429);
     const body = await c.req.json();
-    const alert = createAlert(db, body);
-    if (body.pushSubscription) savePushSubscription(db, alert.id, body.pushSubscription);
+    // Alert + push subscription succeed or fail together.
+    const alert = tx(db, () => {
+      const a = createAlert(db, body);
+      if (body.pushSubscription) savePushSubscription(db, a.id, body.pushSubscription);
+      return a;
+    });
     if (alert.email) {
-      const welcome = buildMessage([], manageUrl(alert));
-      welcome.title = 'Your Whimsy alert is live';
-      await sendEmail(db, alert.email, { ...welcome, deals: previewMatches(db, alert, 6) }).catch((e) =>
+      const welcome = { ...buildMessage(previewMatches(db, alert, 6), manageUrl(alert)), title: 'Your Whimsy alert is live' };
+      await sendEmail(db, alert.email, welcome).catch((e) =>
         console.warn('[alerts] welcome email failed', e.message),
       );
     }
