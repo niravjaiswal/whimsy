@@ -235,7 +235,7 @@ export function Home() {
           <div className="dips">
             {dips.data.dips.map((d) => (
               <a key={`${d.origin.code}${d.destination.code}`} className="dip" href={d.bookingUrl} target="_blank" rel="noreferrer">
-                {d.destination.image ? <CityImage src={d.destination.image} alt="" /> : <div className="ph" />}
+                {d.destination.image ? <CityImage src={d.destination.image} alt="" sizes="44px" /> : <div className="ph" />}
                 <div style={{ minWidth: 0 }}>
                   <div className="t">
                     {d.origin.city} → {d.destination.city}

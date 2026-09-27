@@ -43,13 +43,23 @@ export function DealPage() {
         </Link>
       </div>
 
-      <section className="deal-hero">
-        <CityImage src={d.destination.image} alt="" />
+      <section className={`deal-hero ${d.destination.imageHd ? 'hd' : ''}`}>
+        <CityImage src={d.destination.image} alt="" sizes="(max-width: 1180px) 100vw, 1180px" />
+        {d.destination.imageCredit && (
+          <a
+            className="photo-credit"
+            href={`https://commons.wikimedia.org/wiki/File:${encodeURIComponent(d.destination.imageCredit)}`}
+            target="_blank"
+            rel="noreferrer"
+          >
+            Photo: Wikimedia Commons
+          </a>
+        )}
         <div className="deal-hero-inner">
           <div>
             {d.destination.image && (
               <div className="postcard">
-                <CityImage src={d.destination.image} alt={d.destination.city} />
+                <CityImage src={d.destination.thumb ?? d.destination.image} alt={d.destination.city} sizes="150px" />
                 <span>{d.destination.code}</span>
               </div>
             )}

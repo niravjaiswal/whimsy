@@ -12,6 +12,7 @@ import {
   type Alert,
 } from './alerts.js';
 import { config } from './config.js';
+import { resizeWikimedia } from './images.js';
 import { tx, type DB } from './db.js';
 import { TIER_RANK, type DealRow, type Tier } from './deals.js';
 import { buildMessage, sendEmail, sendNtfy, sendPush, sendWebhook, vapidKeys } from './notify/channels.js';
@@ -27,14 +28,41 @@ export interface AppDeps {
   bus: EventEmitter;
 }
 
-type Place = { code: string; city: string; country: string; image: string | null };
+interface PlaceMeta {
+  city: string | null;
+  /** Best available photo (1280px Wikimedia, else Google's 225px thumbnail). */
+  image: string | null;
+  /** Card-sized photo (960px Wikimedia — a standard thumbnail width — else the Google thumbnail). */
+  thumb: string | null;
+  hd: boolean;
+  /** Commons file name for photo attribution. */
+  credit: string | null;
+}
+type Places = Map<string, PlaceMeta>;
 
-function placeMap(db: DB): Map<string, { image: string | null; city: string | null }> {
-  const rows = db.prepare('SELECT code, image, city FROM places').all() as { code: string; image: string | null; city: string | null }[];
-  return new Map(rows.map((r) => [r.code, r]));
+function placeMap(db: DB): Places {
+  const rows = db
+    .prepare(
+      `SELECT a.code, p.city, p.image AS g, c.url AS w, c.file
+       FROM (SELECT code FROM places UNION SELECT code FROM city_images) a
+       LEFT JOIN places p ON p.code = a.code LEFT JOIN city_images c ON c.code = a.code`,
+    )
+    .all() as { code: string; city: string | null; g: string | null; w: string | null; file: string | null }[];
+  return new Map(
+    rows.map((r) => [
+      r.code,
+      {
+        city: r.city,
+        image: r.w ?? r.g,
+        thumb: r.w ? resizeWikimedia(r.w, 960) : r.g,
+        hd: !!r.w,
+        credit: r.w ? r.file : null,
+      },
+    ]),
+  );
 }
 
-export function serializeDeal(d: DealRow, places?: Map<string, { image: string | null; city: string | null }>) {
+export function serializeDeal(d: DealRow, places?: Places) {
   const o = AIRPORT_BY_CODE.get(d.origin);
   const t = AIRPORT_BY_CODE.get(d.destination);
   const place = (code: string, a = AIRPORT_BY_CODE.get(code)) => ({
@@ -46,6 +74,9 @@ export function serializeDeal(d: DealRow, places?: Map<string, { image: string |
     lon: a?.lon ?? null,
     vibe: a?.vibe ?? null,
     image: places?.get(code)?.image ?? null,
+    thumb: places?.get(code)?.thumb ?? null,
+    imageHd: places?.get(code)?.hd ?? false,
+    imageCredit: places?.get(code)?.credit ?? null,
   });
   const nights = d.return_date
     ? Math.round((Date.parse(d.return_date) - Date.parse(d.depart_date)) / 86400_000)
@@ -125,7 +156,7 @@ export function createApi({ db, scanner, bus }: AppDeps) {
   api.get('/meta', (c) => {
     const places = placeMap(db);
     return c.json({
-      airports: AIRPORTS.map((a) => ({ ...a, image: places.get(a.code)?.image ?? null })),
+      airports: AIRPORTS.map((a) => ({ ...a, image: places.get(a.code)?.thumb ?? null })),
       regions: Object.entries(REGION_LABELS).map(([id, label]) => ({ id, label })),
       vapidPublicKey: vapidKeys(db).publicKey,
       tiers: ['good', 'great', 'incredible'],
@@ -210,7 +241,7 @@ export function createApi({ db, scanner, bus }: AppDeps) {
         destination: {
           code: r.destination,
           city: AIRPORT_BY_CODE.get(r.destination)?.city ?? r.destination,
-          image: places.get(r.destination)?.image ?? null,
+          image: places.get(r.destination)?.thumb ?? null,
         },
         departDate: r.depart_date,
         returnDate: r.return_date,

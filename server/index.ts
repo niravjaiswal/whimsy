@@ -9,6 +9,7 @@ import { enqueueMatches } from './alerts.js';
 import { createApi } from './api.js';
 import { config } from './config.js';
 import { openDb } from './db.js';
+import { syncCityImages } from './images.js';
 import { flushNotifications } from './notify/notifier.js';
 import { GoogleFlightsProvider } from './providers/google.js';
 import { seedRoutes } from './routes.js';
@@ -62,6 +63,10 @@ setInterval(() => {
 scanner.maintain();
 
 if (config.scannerEnabled) scanner.start();
+
+// Resolve high-res destination photos in the background (cached ~30 days).
+void syncCityImages(db).catch((err) => console.warn('[images] sync failed', err));
+setInterval(() => void syncCityImages(db).catch(() => {}), 24 * 3600_000).unref();
 
 const app = new Hono();
 app.use('*', compress());

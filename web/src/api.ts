@@ -24,6 +24,9 @@ export interface Place {
   lon: number | null;
   vibe: string | null;
   image: string | null;
+  thumb: string | null;
+  imageHd: boolean;
+  imageCredit: string | null;
 }
 
 export interface Deal {

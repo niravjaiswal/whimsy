@@ -3,10 +3,27 @@ import { Link } from 'react-router-dom';
 import type { Deal } from '../api';
 import { TIER_LABEL, ago, dateRange, duration, money, pct, stopsLabel } from '../format';
 
-export function CityImage({ src, alt }: { src: string | null; alt: string }) {
+// Wikimedia serves only standard thumbnail widths; offer the browser a few.
+const WIKI_WIDTHS = [500, 960, 1280];
+const isWikimedia = (src: string) => /wikimedia\.org\/.+\/\d+px-/.test(src);
+const wikiSize = (src: string, w: number) => src.replace(/\/\d+px-([^/]+)$/, `/${w}px-$1`);
+
+export function CityImage({ src, alt, sizes }: { src: string | null; alt: string; sizes?: string }) {
   const [failed, setFailed] = useState(false);
   if (!src || failed) return null;
-  return <img src={src} alt={alt} loading="lazy" referrerPolicy="no-referrer" onError={() => setFailed(true)} />;
+  const srcSet = isWikimedia(src) ? WIKI_WIDTHS.map((w) => `${wikiSize(src, w)} ${w}w`).join(', ') : undefined;
+  return (
+    <img
+      src={src}
+      srcSet={srcSet}
+      sizes={srcSet ? (sizes ?? '(max-width: 640px) 100vw, 420px') : undefined}
+      alt={alt}
+      loading="lazy"
+      decoding="async"
+      referrerPolicy="no-referrer"
+      onError={() => setFailed(true)}
+    />
+  );
 }
 
 export function PriceRange({ price, low, high, baseline }: { price: number; low: number | null; high: number | null; baseline: number }) {
@@ -36,7 +53,7 @@ export function DealCard({ deal, fresh }: { deal: Deal; fresh?: boolean }) {
   return (
     <Link to={`/deal/${deal.slug}`} className={`deal-card ${fresh ? 'fresh' : ''}`} aria-label={`${deal.destination.city} for ${money(deal.price)}`}>
       <div className="dc-media">
-        <CityImage src={deal.destination.image} alt="" />
+        <CityImage src={deal.destination.thumb ?? deal.destination.image} alt="" />
         <div className="dc-badges">
           <TierBadge deal={deal} />
           <span className="badge" style={{ color: 'var(--text-2)' }}>
@@ -81,7 +98,7 @@ export function DealCard({ deal, fresh }: { deal: Deal; fresh?: boolean }) {
 export function MiniDeal({ deal }: { deal: Deal }) {
   return (
     <Link to={`/deal/${deal.slug}`} className="mini-deal">
-      {deal.destination.image ? <CityImage src={deal.destination.image} alt="" /> : <div className="ph" />}
+      {deal.destination.thumb ? <CityImage src={deal.destination.thumb} alt="" sizes="48px" /> : <div className="ph" />}
       <div style={{ minWidth: 0 }}>
         <div>
           {deal.origin.city} → {deal.destination.city}

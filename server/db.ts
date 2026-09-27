@@ -70,6 +70,15 @@ CREATE TABLE IF NOT EXISTS places (
   updated_at INTEGER NOT NULL
 );
 
+-- High-res destination photos (Wikipedia lead images). url NULL = no usable photo.
+CREATE TABLE IF NOT EXISTS city_images (
+  code TEXT PRIMARY KEY,
+  url TEXT,
+  file TEXT,
+  title TEXT,
+  fetched_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS deals (
   id INTEGER PRIMARY KEY,
   slug TEXT NOT NULL UNIQUE,
