@@ -32,6 +32,11 @@ describe('api', () => {
     expect((await (await json('/deals?origin=DTW')).json()).deals[0].destination.city).toBe('Lisbon');
     expect((await (await json('/deals?maxPrice=450')).json()).total).toBe(1);
     expect((await (await json('/deals?tier=incredible')).json()).total).toBe(1);
+    expect((await (await json('/deals?departFrom=2026-11-10&departTo=2026-11-10')).json()).total).toBe(2);
+    expect((await (await json('/deals?departFrom=2026-11-11&departTo=2026-11-20')).json()).total).toBe(0);
+    expect((await (await json('/deals?minNights=2&maxNights=4')).json()).total).toBe(0);
+    expect((await (await json('/deals?minNights=5&maxNights=9')).json()).total).toBe(2);
+    expect((await json('/deals?departFrom=bogus')).status).toBe(400);
     const cheapFirst = await (await json('/deals?sort=price')).json();
     expect(cheapFirst.deals[0].price).toBe(400);
   });

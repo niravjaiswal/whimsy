@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { api, rememberAlert, useMeta, type Alert, type Region } from '../api';
 import { AlertForm, draftToPayload, type AlertDraft } from '../components/AlertForm';
+import { whenFromParams } from '../components/WhenPicker';
 
 export function AlertNew() {
   const meta = useMeta();
@@ -17,7 +18,7 @@ export function AlertNew() {
     destinations: list('dest'),
     maxPrice: Number(params.get('max')) || null,
     minTier: 'good',
-    months: list('when'),
+    ...whenFromParams(params),
     frequency: 'instant',
     channels: { email: false, push: false, ntfy: '', webhook: '' },
   };

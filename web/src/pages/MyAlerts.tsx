@@ -2,11 +2,13 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api, rememberedAlerts, type Alert } from '../api';
 import { REGION_EMOJI, money } from '../format';
+import { isAnyWhen, whenSummary } from '../components/WhenPicker';
 
 function describe(a: Alert) {
   const from = a.origins.length ? a.origins.join(', ') : 'any airport';
   const to = a.destinations.length || a.regions.length ? [...a.regions.map((r) => REGION_EMOJI[r]), ...a.destinations].join(' ') : 'anywhere 🌍';
-  return `From ${from} → ${to}${a.maxPrice ? ` · under ${money(a.maxPrice)}` : ''}`;
+  const when = isAnyWhen(a) ? '' : ` · ${whenSummary(a)}`;
+  return `From ${from} → ${to}${when}${a.maxPrice ? ` · under ${money(a.maxPrice)}` : ''}`;
 }
 
 export function MyAlerts() {

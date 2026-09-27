@@ -133,3 +133,38 @@ describe('Scanner probes', () => {
     expect((db.prepare('SELECT COUNT(*) n FROM deals').get() as any).n).toBe(2);
   });
 });
+
+describe('Scanner targeted jobs', () => {
+  it('checks routes matching an alert inside its date window and trip length', async () => {
+    const { createAlert } = await import('../server/alerts.js');
+    const db = memDb();
+    addRoute(db, 'DTW', 'LIS');
+    addRoute(db, 'DTW', 'NRT', 6400);
+    addRoute(db, 'ORD', 'CDG', 4150);
+    createAlert(db, { origins: ['DTW'], regions: ['europe'], departFrom: '2026-11-24', departTo: '2026-11-28', minNights: 3, maxNights: 5, channels: { push: true } });
+    const s = new Scanner(db, new FakeProvider(() => 800), { targetEvery: 1 });
+    const now = Date.parse('2026-09-26T12:00:00Z');
+    for (let i = 0; i < 20; i++) {
+      const job = s.targetedJob(now)!;
+      expect(job.kind).toBe('targeted');
+      expect(job.route.origin + job.route.destination).toBe('DTWLIS');
+      expect(job.query.departDate >= '2026-11-24' && job.query.departDate <= '2026-11-28').toBe(true);
+      const n = (Date.parse(job.query.returnDate!) - Date.parse(job.query.departDate)) / 86400_000;
+      expect(n).toBeGreaterThanOrEqual(3);
+      expect(n).toBeLessThanOrEqual(5);
+    }
+  });
+  it('does nothing without windowed alerts and never consumes the sample slot', async () => {
+    const { createAlert } = await import('../server/alerts.js');
+    const db = memDb();
+    addRoute(db);
+    const s = new Scanner(db, new FakeProvider(() => 800), { targetEvery: 1 });
+    expect(s.targetedJob()).toBeNull();
+    const far = new Date(Date.now() + 60 * 86400_000).toISOString().slice(0, 10);
+    createAlert(db, { departFrom: far, departTo: far, channels: { push: true } });
+    const job = s.nextJob()!;
+    expect(job.kind).toBe('targeted');
+    await s.run(job);
+    expect((db.prepare('SELECT sample_cursor c, scan_count n FROM routes').get() as any)).toMatchObject({ n: 0 });
+  });
+});

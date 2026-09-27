@@ -1,7 +1,9 @@
 import { EventEmitter } from 'node:events';
 import type { DB } from './db.js';
 import { recordResult, sweepStaleDeals, type DealEvent, type DealRow } from './deals.js';
-import { sampleDates, type RouteRow } from './routes.js';
+import { sampleDates, tripLengths, type RouteRow } from './routes.js';
+import { rowToAlert } from './alerts.js';
+import { AIRPORT_BY_CODE, type Region } from './airports.js';
 import { ProviderError, type FareProvider, type FareQuery } from './providers/types.js';
 
 export interface ScannerOptions {
@@ -10,6 +12,8 @@ export interface ScannerOptions {
   concurrency: number;
   /** Re-check active deals this often so stale fares disappear quickly. */
   reverifyMs: number;
+  /** Every Nth job goes to alerts with a specific date window (0 disables). */
+  targetEvery: number;
 }
 
 export interface ScanEvent {
@@ -27,7 +31,7 @@ export interface ScanEvent {
   kind: JobKind;
 }
 
-type JobKind = 'sample' | 'verify' | 'probe';
+type JobKind = 'sample' | 'verify' | 'probe' | 'targeted';
 type Job = { route: RouteRow; query: FareQuery; kind: JobKind };
 
 /** Deals cluster in date ranges: when we find one, check nearby departures too. */
@@ -40,7 +44,7 @@ const shiftDate = (iso: string, days: number) => {
   return d.toISOString().slice(0, 10);
 };
 
-export const DEFAULT_SCANNER_OPTIONS: ScannerOptions = { rpm: 24, concurrency: 2, reverifyMs: 6 * 3600_000 };
+export const DEFAULT_SCANNER_OPTIONS: ScannerOptions = { rpm: 24, concurrency: 2, reverifyMs: 6 * 3600_000, targetEvery: 3 };
 
 export class Scanner extends EventEmitter<{ scan: [ScanEvent]; deal: [DealEvent] }> {
   private timer: NodeJS.Timeout | null = null;
@@ -49,6 +53,7 @@ export class Scanner extends EventEmitter<{ scan: [ScanEvent]; deal: [DealEvent]
   private pausedUntil = 0;
   private lastTickAt = 0;
   private probes: Job[] = [];
+  private jobCount = 0;
   running = false;
   readonly opts: ScannerOptions;
 
@@ -129,6 +134,11 @@ export class Scanner extends EventEmitter<{ scan: [ScanEvent]; deal: [DealEvent]
     }
     const probeIdx = this.probes.findIndex((p) => !this.inFlight.has(p.route.id));
     if (probeIdx >= 0) return this.probes.splice(probeIdx, 1)[0];
+    this.jobCount++;
+    if (this.opts.targetEvery > 0 && this.jobCount % this.opts.targetEvery === 0) {
+      const targeted = this.targetedJob(now);
+      if (targeted) return targeted;
+    }
     const route = this.db
       .prepare(`SELECT * FROM routes r WHERE enabled = 1 AND next_scan_at <= ? ${notBusy} ORDER BY next_scan_at LIMIT 1`)
       .get(now) as RouteRow | undefined;
@@ -221,6 +231,42 @@ export class Scanner extends EventEmitter<{ scan: [ScanEvent]; deal: [DealEvent]
         query: { ...q, departDate, returnDate: q.returnDate ? shiftDate(q.returnDate, off) : undefined },
       });
     }
+  }
+
+  /**
+   * The rotation only samples a few dates per route, so a narrow alert window
+   * (e.g. Thanksgiving week) could go unchecked for days. Spend a slice of the
+   * budget on random routes matching an alert, departing inside its window.
+   */
+  targetedJob(now = Date.now(), rand = Math.random): Job | null {
+    const earliest = new Date(now + 2 * 86400_000).toISOString().slice(0, 10);
+    const alerts = (this.db
+      .prepare('SELECT * FROM alerts WHERE paused = 0 AND depart_from IS NOT NULL AND depart_to >= ?')
+      .all(earliest) as any[]).map(rowToAlert);
+    if (!alerts.length) return null;
+    const alert = alerts[Math.floor(rand() * alerts.length)];
+    const routes = (this.db.prepare('SELECT * FROM routes WHERE enabled = 1').all() as unknown as RouteRow[]).filter(
+      (r) =>
+        !this.inFlight.has(r.id) &&
+        (!alert.origins.length || alert.origins.includes(r.origin)) &&
+        (!(alert.destinations.length || alert.regions.length) ||
+          alert.destinations.includes(r.destination) ||
+          alert.regions.includes(AIRPORT_BY_CODE.get(r.destination)?.region as Region)),
+    );
+    if (!routes.length) return null;
+    const route = routes[Math.floor(rand() * routes.length)];
+    const from = alert.departFrom! < earliest ? earliest : alert.departFrom!;
+    const span = Math.round((Date.parse(alert.departTo!) - Date.parse(from)) / 86400_000);
+    const departDate = shiftDate(from, Math.floor(rand() * (span + 1)));
+    const lengths = tripLengths(route.distance);
+    const lo = alert.minNights ?? (alert.maxNights != null ? Math.min(lengths[0], alert.maxNights) : null);
+    const hi = alert.maxNights ?? (alert.minNights != null ? Math.max(lengths[lengths.length - 1], alert.minNights) : null);
+    const nights = lo != null && hi != null ? lo + Math.floor(rand() * (hi - lo + 1)) : lengths[Math.floor(rand() * lengths.length)];
+    return {
+      route,
+      kind: 'targeted',
+      query: { origin: route.origin, destination: route.destination, departDate, returnDate: shiftDate(departDate, nights) },
+    };
   }
 
   pendingProbes() {

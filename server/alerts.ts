@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { AIRPORT_BY_CODE, REGION_LABELS, type Region } from './airports.js';
 import type { DB } from './db.js';
 import { TIER_RANK, TIERS, type DealRow, type Tier } from './deals.js';
+import { matchesWhen, normalizeWhen, type WhenFilter } from './when.js';
 
 export interface AlertChannels {
   email?: boolean;
@@ -21,6 +22,10 @@ export interface Alert {
   maxPrice: number | null;
   minTier: Tier;
   months: string[];
+  departFrom: string | null;
+  departTo: string | null;
+  minNights: number | null;
+  maxNights: number | null;
   channels: AlertChannels;
   frequency: 'instant' | 'daily';
   paused: boolean;
@@ -39,6 +44,10 @@ interface AlertRowDb {
   max_price: number | null;
   min_tier: Tier;
   months: string;
+  depart_from: string | null;
+  depart_to: string | null;
+  min_nights: number | null;
+  max_nights: number | null;
   channels: string;
   frequency: 'instant' | 'daily';
   paused: number;
@@ -58,6 +67,10 @@ export function rowToAlert(r: AlertRowDb): Alert {
     maxPrice: r.max_price,
     minTier: r.min_tier,
     months: JSON.parse(r.months),
+    departFrom: r.depart_from ?? null,
+    departTo: r.depart_to ?? null,
+    minNights: r.min_nights ?? null,
+    maxNights: r.max_nights ?? null,
     channels: JSON.parse(r.channels),
     frequency: r.frequency,
     paused: !!r.paused,
@@ -86,8 +99,12 @@ export function normalizeAlertInput(input: AlertInput): Omit<Alert, 'id' | 'toke
   const destinations = codes(input.destinations, 'destinations');
   const regions = [...new Set((input.regions ?? []).map(String))] as Region[];
   for (const r of regions) if (!(r in REGION_LABELS)) throw new ValidationError(`Unknown region ${r}`);
-  const months = [...new Set((input.months ?? []).map(String))];
-  for (const m of months) if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(m)) throw new ValidationError(`Bad month ${m}`);
+  let when: WhenFilter;
+  try {
+    when = normalizeWhen(input);
+  } catch (e) {
+    throw new ValidationError((e as Error).message);
+  }
   const minTier = (input.minTier ?? 'good') as Tier;
   if (!TIERS.includes(minTier)) throw new ValidationError('Bad tier');
   const maxPrice = input.maxPrice == null || (input.maxPrice as unknown) === '' ? null : Math.round(Number(input.maxPrice));
@@ -124,7 +141,7 @@ export function normalizeAlertInput(input: AlertInput): Omit<Alert, 'id' | 'toke
 
   const frequency = input.frequency === 'daily' ? 'daily' : 'instant';
   const name = input.name ? String(input.name).slice(0, 80) : null;
-  return { name, email, origins, regions, destinations, maxPrice, minTier, months, channels, frequency, paused: !!input.paused };
+  return { name, email, origins, regions, destinations, maxPrice, minTier, ...when, channels, frequency, paused: !!input.paused };
 }
 
 export function createAlert(db: DB, input: AlertInput, now = Date.now()): Alert {
@@ -132,11 +149,12 @@ export function createAlert(db: DB, input: AlertInput, now = Date.now()): Alert 
   const token = crypto.randomBytes(18).toString('base64url');
   const res = db
     .prepare(
-      `INSERT INTO alerts (token, name, email, origins, regions, destinations, max_price, min_tier, months, channels, frequency, paused, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO alerts (token, name, email, origins, regions, destinations, max_price, min_tier, months, depart_from, depart_to,
+         min_nights, max_nights, channels, frequency, paused, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(token, a.name, a.email, JSON.stringify(a.origins), JSON.stringify(a.regions), JSON.stringify(a.destinations), a.maxPrice, a.minTier,
-      JSON.stringify(a.months), JSON.stringify(a.channels), a.frequency, a.paused ? 1 : 0, now);
+      JSON.stringify(a.months), a.departFrom, a.departTo, a.minNights, a.maxNights, JSON.stringify(a.channels), a.frequency, a.paused ? 1 : 0, now);
   return getAlertById(db, Number(res.lastInsertRowid))!;
 }
 
@@ -145,10 +163,11 @@ export function updateAlert(db: DB, token: string, input: AlertInput): Alert | n
   if (!current) return null;
   const a = normalizeAlertInput({ ...current, ...input });
   db.prepare(
-    `UPDATE alerts SET name=?, email=?, origins=?, regions=?, destinations=?, max_price=?, min_tier=?, months=?, channels=?, frequency=?, paused=?
+    `UPDATE alerts SET name=?, email=?, origins=?, regions=?, destinations=?, max_price=?, min_tier=?, months=?, depart_from=?, depart_to=?,
+       min_nights=?, max_nights=?, channels=?, frequency=?, paused=?
      WHERE token = ?`,
   ).run(a.name, a.email, JSON.stringify(a.origins), JSON.stringify(a.regions), JSON.stringify(a.destinations), a.maxPrice, a.minTier,
-    JSON.stringify(a.months), JSON.stringify(a.channels), a.frequency, a.paused ? 1 : 0, token);
+    JSON.stringify(a.months), a.departFrom, a.departTo, a.minNights, a.maxNights, JSON.stringify(a.channels), a.frequency, a.paused ? 1 : 0, token);
   return getAlertByToken(db, token);
 }
 
@@ -167,7 +186,10 @@ export function deleteAlert(db: DB, token: string): boolean {
 }
 
 /** Does this deal satisfy the alert's filters? */
-export function matchesAlert(alert: Alert, deal: Pick<DealRow, 'origin' | 'destination' | 'price' | 'tier' | 'depart_date'>): boolean {
+export function matchesAlert(
+  alert: Alert,
+  deal: Pick<DealRow, 'origin' | 'destination' | 'price' | 'tier' | 'depart_date'> & Partial<Pick<DealRow, 'return_date'>>,
+): boolean {
   if (alert.paused) return false;
   if (alert.origins.length && !alert.origins.includes(deal.origin)) return false;
   if (alert.destinations.length || alert.regions.length) {
@@ -177,7 +199,7 @@ export function matchesAlert(alert: Alert, deal: Pick<DealRow, 'origin' | 'desti
   }
   if (alert.maxPrice != null && deal.price > alert.maxPrice) return false;
   if (TIER_RANK[deal.tier] < TIER_RANK[alert.minTier]) return false;
-  if (alert.months.length && !alert.months.includes(deal.depart_date.slice(0, 7))) return false;
+  if (!matchesWhen(alert, { depart_date: deal.depart_date, return_date: deal.return_date ?? null })) return false;
   return true;
 }
 

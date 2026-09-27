@@ -179,6 +179,7 @@ export function openDb(file = process.env.DATABASE_PATH ?? path.resolve('data/wh
   if (file !== ':memory:') fs.mkdirSync(path.dirname(file), { recursive: true });
   const db = new DatabaseSync(file);
   db.exec(SCHEMA);
+  migrate(db);
   return db;
 }
 
@@ -201,4 +202,18 @@ export function tx<T>(db: DB, fn: () => T): T {
     db.exec('ROLLBACK');
     throw err;
   }
+}
+
+/** Additive column migrations for databases created by older versions. */
+function migrate(db: DB) {
+  const cols = (table: string) =>
+    new Set((db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map((c) => c.name));
+  const alerts = cols('alerts');
+  const add: [string, string][] = [
+    ['depart_from', 'TEXT'],
+    ['depart_to', 'TEXT'],
+    ['min_nights', 'INTEGER'],
+    ['max_nights', 'INTEGER'],
+  ];
+  for (const [name, type] of add) if (!alerts.has(name)) db.exec(`ALTER TABLE alerts ADD COLUMN ${name} ${type}`);
 }

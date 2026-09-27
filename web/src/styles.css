@@ -517,9 +517,7 @@ a.pill:hover {
   z-index: 40;
   min-width: 300px;
   max-width: min(420px, calc(100vw - 32px));
-  background: rgba(14, 14, 20, 0.96);
-  backdrop-filter: blur(24px);
-  -webkit-backdrop-filter: blur(24px);
+  background: #0e0e14;
   border-radius: var(--r-md);
   box-shadow: 0 0 0 1px var(--line-2), 0 30px 60px -10px rgba(0, 0, 0, 0.6);
   padding: 10px;
@@ -528,13 +526,19 @@ a.pill:hover {
 }
 @keyframes pop {
   from {
-    opacity: 0;
     transform: translateY(-4px) scale(0.98);
   }
 }
 .popover-right {
   left: auto;
   right: 0;
+}
+.popover-wide {
+  max-width: min(640px, calc(100vw - 32px));
+}
+.popover-wide .when {
+  width: 600px;
+  max-width: 100%;
 }
 .pop-search {
   width: 100%;
@@ -1615,5 +1619,134 @@ a.pill:hover {
     animation-duration: 0.001ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.001ms !important;
+  }
+}
+
+/* ── When picker ─────────────────────────────────────────────────────── */
+.when {
+  width: 600px;
+  max-width: calc(100vw - 56px);
+  padding: 4px;
+}
+.popover .when {
+  padding: 6px;
+}
+.when-tabs {
+  margin-bottom: 14px;
+  background: rgba(255, 255, 255, 0.05);
+  box-shadow: none;
+}
+.when-body {
+  min-height: 60px;
+}
+.when-presets {
+  margin-bottom: 14px;
+}
+.chip-sm {
+  height: 30px;
+  padding: 0 11px;
+  font-size: 13px;
+}
+.when-status {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  font-size: 13.5px;
+  margin-top: 10px;
+  min-height: 24px;
+}
+.when-length {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+.cal {
+  position: relative;
+}
+.cal-months {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 22px;
+}
+.cal-nav {
+  position: absolute;
+  top: -4px;
+  width: 30px;
+  height: 30px;
+  z-index: 1;
+  font-size: 18px;
+  line-height: 1;
+}
+.cal-nav.prev {
+  left: 0;
+}
+.cal-nav.next {
+  right: 0;
+}
+.cal-nav:disabled {
+  opacity: 0.25;
+  cursor: default;
+}
+.cal-title {
+  text-align: center;
+  font-size: 14.5px;
+  margin-bottom: 10px;
+  line-height: 22px;
+}
+.cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  row-gap: 2px;
+}
+.cal-dow {
+  text-align: center;
+  font-size: 11px;
+  color: var(--faint);
+  padding-bottom: 6px;
+}
+.cal-day {
+  height: 36px;
+  border: 0;
+  background: none;
+  font-size: 13.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  border-radius: 0;
+  position: relative;
+}
+.cal-day:hover:not(:disabled):not(.start):not(.end) {
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+}
+.cal-day:disabled {
+  color: rgba(255, 255, 255, 0.2);
+  cursor: default;
+}
+.cal-day.in {
+  background: rgba(65, 106, 244, 0.22);
+}
+.cal-day.start,
+.cal-day.end {
+  background: linear-gradient(180deg, var(--blue-0), var(--blue-1));
+  color: #fff;
+  font-weight: 500;
+}
+.cal-day.start {
+  border-radius: 10px 0 0 10px;
+}
+.cal-day.end {
+  border-radius: 0 10px 10px 0;
+}
+.cal-day.start.end,
+.cal-day.solo {
+  border-radius: 10px;
+}
+@media (max-width: 640px) {
+  .cal-months {
+    grid-template-columns: 1fr;
+  }
+  .cal-second {
+    display: none;
   }
 }

@@ -38,6 +38,21 @@ describe('matchesAlert', () => {
     expect(matchesAlert({ ...alert, regions: ['europe'] }, deal)).toBe(true);
     expect(matchesAlert({ ...alert, regions: ['asia'], destinations: ['LIS'] }, deal)).toBe(true);
   });
+  it('filters by departure window and trip length', () => {
+    const d = { ...deal, return_date: '2026-11-13' };
+    const win = { ...alert, departFrom: '2026-11-08', departTo: '2026-11-12' };
+    expect(matchesAlert(win, d)).toBe(true);
+    expect(matchesAlert({ ...win, departTo: '2026-11-09' }, d)).toBe(false);
+    expect(matchesAlert({ ...alert, minNights: 2, maxNights: 4 }, d)).toBe(true);
+    expect(matchesAlert({ ...alert, minNights: 5 }, d)).toBe(false);
+  });
+  it('persists and validates when-filters', () => {
+    const db = memDb();
+    const a = createAlert(db, { departFrom: '2027-03-06', departTo: '2027-03-14', minNights: 3, maxNights: 6, channels: { push: true } });
+    expect(a).toMatchObject({ departFrom: '2027-03-06', departTo: '2027-03-14', minNights: 3, maxNights: 6 });
+    expect(updateAlert(db, a.token, { departFrom: null, departTo: null })).toMatchObject({ departFrom: null, departTo: null, minNights: 3 });
+    expect(() => createAlert(db, { departFrom: 'nope', channels: { push: true } })).toThrow(ValidationError);
+  });
   it('filters by price, tier, month, paused', () => {
     expect(matchesAlert({ ...alert, maxPrice: 399 }, deal)).toBe(false);
     expect(matchesAlert({ ...alert, minTier: 'incredible' }, deal)).toBe(false);

@@ -27,6 +27,7 @@ export function Field({
   placeholder,
   children,
   align,
+  wide,
   style,
 }: {
   label: string;
@@ -34,6 +35,7 @@ export function Field({
   placeholder?: boolean;
   children: (close: () => void) => ReactNode;
   align?: 'right';
+  wide?: boolean;
   style?: React.CSSProperties;
 }) {
   const [open, setOpen] = useState(false);
@@ -50,7 +52,7 @@ export function Field({
         <span className="sb-label">{label}</span>
         <span className={`sb-value ${placeholder ? 'placeholder' : ''}`}>{value}</span>
       </button>
-      {open && <div className={`popover ${align === 'right' ? 'popover-right' : ''}`}>{children(close)}</div>}
+      {open && <div className={`popover ${align === 'right' ? 'popover-right' : ''} ${wide ? 'popover-wide' : ''}`}>{children(close)}</div>}
     </div>
   );
 }

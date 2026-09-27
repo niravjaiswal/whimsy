@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { api, pushSupported, subscribePush, type Alert, type Deal, type Meta, type Region, type Tier } from '../api';
 import { REGION_EMOJI, money } from '../format';
 import { MiniDeal } from './DealCard';
-import { AirportList, MonthChips, useClickOutside } from './Pickers';
+import { AirportList, useClickOutside } from './Pickers';
+import { WhenPicker, whenQuery } from './WhenPicker';
 
 export interface AlertDraft {
   name: string;
@@ -13,6 +14,10 @@ export interface AlertDraft {
   maxPrice: number | null;
   minTier: Tier;
   months: string[];
+  departFrom: string | null;
+  departTo: string | null;
+  minNights: number | null;
+  maxNights: number | null;
   frequency: 'instant' | 'daily';
   channels: { email: boolean; push: boolean; ntfy: string; webhook: string };
 }
@@ -27,6 +32,10 @@ export function draftFromAlert(a: Alert): AlertDraft {
     maxPrice: a.maxPrice,
     minTier: a.minTier,
     months: a.months,
+    departFrom: a.departFrom,
+    departTo: a.departTo,
+    minNights: a.minNights,
+    maxNights: a.maxNights,
     frequency: a.frequency,
     channels: { email: !!a.channels.email, push: !!a.channels.push, ntfy: a.channels.ntfy ?? '', webhook: a.channels.webhook ?? '' },
   };
@@ -41,7 +50,7 @@ export function draftToPayload(d: AlertDraft) {
     destinations: d.destinations,
     maxPrice: d.maxPrice,
     minTier: d.minTier,
-    months: d.months,
+    ...whenQuery(d),
     frequency: d.frequency,
     channels: {
       email: d.channels.email || undefined,
@@ -103,12 +112,12 @@ export function AlertForm({
   const ch = (patch: Partial<AlertDraft['channels']>) => setD((x) => ({ ...x, channels: { ...x.channels, ...patch } }));
 
   // Live preview of what this alert would match right now.
-  const previewKey = JSON.stringify([d.origins, d.regions, d.destinations, d.maxPrice, d.minTier, d.months]);
+  const previewKey = JSON.stringify([d.origins, d.regions, d.destinations, d.maxPrice, d.minTier, whenQuery(d)]);
   useEffect(() => {
     const t = setTimeout(() => {
       api<{ count: number; deals: Deal[] }>('/alerts/preview', {
         method: 'POST',
-        json: { origins: d.origins, regions: d.regions, destinations: d.destinations, maxPrice: d.maxPrice, minTier: d.minTier, months: d.months },
+        json: { origins: d.origins, regions: d.regions, destinations: d.destinations, maxPrice: d.maxPrice, minTier: d.minTier, ...whenQuery(d) },
       })
         .then(setPreview)
         .catch(() => setPreview(null));
@@ -141,6 +150,7 @@ export function AlertForm({
     e.preventDefault();
     setErr('');
     if (!anyChannel) return setErr('Pick at least one way to be notified.');
+    if (d.departFrom && !d.departTo) return setErr('Pick the last day you could leave to finish your date range.');
     setBusy(true);
     try {
       await onSubmit(d, pushSub);
@@ -195,8 +205,8 @@ export function AlertForm({
 
         <div className="field">
           <span className="label">When?</span>
-          <div className="hint">Departure months you could make work.</div>
-          <MonthChips selected={d.months} onChange={(m) => up({ months: m })} count={11} />
+          <div className="hint">Keep it loose with whole months, or lock in the exact week you can get away.</div>
+          <WhenPicker value={d} onChange={(w) => up(w)} />
         </div>
 
         <div className="field">

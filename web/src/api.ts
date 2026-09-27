@@ -132,6 +132,10 @@ export interface Alert {
   maxPrice: number | null;
   minTier: Tier;
   months: string[];
+  departFrom: string | null;
+  departTo: string | null;
+  minNights: number | null;
+  maxNights: number | null;
   channels: AlertChannels;
   frequency: 'instant' | 'daily';
   paused: boolean;

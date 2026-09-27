@@ -3,9 +3,10 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useLive } from '../App';
 import { useApi, useMeta, type Deal, type Dip, type Region, type ScanEvent, type Tier } from '../api';
 import { CityImage, DealCard } from '../components/DealCard';
-import { AirportList, Field, MonthChips, RegionList, summarize } from '../components/Pickers';
+import { AirportList, Field, RegionList, summarize } from '../components/Pickers';
+import { WhenPicker, isAnyWhen, whenFromParams, whenQuery, whenSummary, whenToParams, type When } from '../components/WhenPicker';
 import { WorldMap } from '../components/WorldMap';
-import { REGION_EMOJI, dateRange, money, monthLabel, num, pct } from '../format';
+import { REGION_EMOJI, dateRange, money, num, pct } from '../format';
 
 const SORTS = [
   { id: 'score', label: 'Best' },
@@ -53,7 +54,8 @@ export function Home() {
   const [params, setParams] = useSearchParams();
   const origins = params.get('from')?.split(',').filter(Boolean) ?? [];
   const regions = (params.get('to')?.split(',').filter(Boolean) ?? []) as Region[];
-  const months = params.get('when')?.split(',').filter(Boolean) ?? [];
+  const when = whenFromParams(params);
+  const setWhen = (w: When) => setParams(whenToParams(w, new URLSearchParams(params)), { replace: true });
   const maxPrice = Number(params.get('max')) || null;
   const sort = params.get('sort') ?? 'score';
   const tier = (params.get('tier') ?? 'good') as Tier;
@@ -69,7 +71,11 @@ export function Home() {
   const q = new URLSearchParams();
   if (origins.length) q.set('origin', origins.join(','));
   if (regions.length) q.set('region', regions.join(','));
-  if (months.length) q.set('month', months.join(','));
+  const wq = whenQuery(when);
+  if (wq.months.length) q.set('month', wq.months.join(','));
+  if (wq.departFrom && wq.departTo) (q.set('departFrom', wq.departFrom), q.set('departTo', wq.departTo));
+  if (wq.minNights != null) q.set('minNights', String(wq.minNights));
+  if (wq.maxNights != null) q.set('maxNights', String(wq.maxNights));
   if (maxPrice) q.set('maxPrice', String(maxPrice));
   q.set('tier', tier);
   q.set('sort', sort);
@@ -97,10 +103,11 @@ export function Home() {
     const a = new URLSearchParams();
     if (origins.length) a.set('from', origins.join(','));
     if (regions.length) a.set('to', regions.join(','));
-    if (months.length) a.set('when', months.join(','));
+    whenToParams(when, a);
     if (maxPrice) a.set('max', String(maxPrice));
     return `/alerts/new${a.size ? `?${a}` : ''}`;
-  }, [origins, regions, months, maxPrice]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [origins, regions, params.get('when'), params.get('dep'), params.get('nights'), maxPrice]);
 
   const regionLabel = regions.length
     ? regions.length === 1
@@ -141,16 +148,8 @@ export function Home() {
           <Field label="To" value={regionLabel} placeholder={!regions.length}>
             {() => meta && <RegionList regions={meta.regions} selected={regions} onChange={(r) => set('to', r.join(',') || null)} />}
           </Field>
-          <Field
-            label="When"
-            value={months.length ? (months.length <= 2 ? months.map((m) => monthLabel(m)).join(', ') : `${months.length} months`) : 'Any time'}
-            placeholder={!months.length}
-          >
-            {() => (
-              <div style={{ padding: 6, width: 360, maxWidth: '100%' }}>
-                <MonthChips selected={months} onChange={(m) => set('when', m.join(',') || null)} />
-              </div>
-            )}
+          <Field label="When" value={whenSummary(when)} placeholder={isAnyWhen(when)} align="right" wide>
+            {() => <WhenPicker value={when} onChange={setWhen} />}
           </Field>
           <Field label="Max price" value={maxPrice ? `Under ${money(maxPrice)}` : 'Any price'} placeholder={!maxPrice} align="right">
             {(close) => (
@@ -223,7 +222,7 @@ export function Home() {
           ))}
         </div>
       ) : (
-        <EmptyDeals filtered={!!(origins.length || regions.length || months.length || maxPrice || tier !== 'good')} alertHref={alertHref} />
+        <EmptyDeals filtered={!!(origins.length || regions.length || !isAnyWhen(when) || maxPrice || tier !== 'good')} alertHref={alertHref} />
       )}
 
       {!!dips.data?.dips.length && (

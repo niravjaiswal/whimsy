@@ -13,6 +13,7 @@ import {
 } from './alerts.js';
 import { config } from './config.js';
 import { resizeWikimedia } from './images.js';
+import { matchesWhen, normalizeWhen, type WhenFilter } from './when.js';
 import { tx, type DB } from './db.js';
 import { TIER_RANK, type DealRow, type Tier } from './deals.js';
 import { buildMessage, sendEmail, sendNtfy, sendPush, sendWebhook, vapidKeys } from './notify/channels.js';
@@ -167,7 +168,18 @@ export function createApi({ db, scanner, bus }: AppDeps) {
     const origins = list(c.req.query('origin')).map((s) => s.toUpperCase());
     const regions = list(c.req.query('region')) as Region[];
     const dests = list(c.req.query('destination')).map((s) => s.toUpperCase());
-    const months = list(c.req.query('month'));
+    let when: WhenFilter;
+    try {
+      when = normalizeWhen({
+        months: list(c.req.query('month')),
+        departFrom: c.req.query('departFrom'),
+        departTo: c.req.query('departTo'),
+        minNights: c.req.query('minNights'),
+        maxNights: c.req.query('maxNights'),
+      });
+    } catch (e) {
+      throw new ValidationError((e as Error).message);
+    }
     const maxPrice = Number(c.req.query('maxPrice')) || null;
     const tier = (c.req.query('tier') ?? 'good') as Tier;
     const sort = c.req.query('sort') ?? 'score';
@@ -177,7 +189,7 @@ export function createApi({ db, scanner, bus }: AppDeps) {
       if (origins.length && !origins.includes(d.origin)) return false;
       if (dests.length && !dests.includes(d.destination)) return false;
       if (regions.length && !regions.includes(AIRPORT_BY_CODE.get(d.destination)?.region as Region)) return false;
-      if (months.length && !months.includes(d.depart_date.slice(0, 7))) return false;
+      if (!matchesWhen(when, d)) return false;
       if (maxPrice && d.price > maxPrice) return false;
       if (TIER_RANK[d.tier] < (TIER_RANK[tier] ?? 1)) return false;
       return true;
