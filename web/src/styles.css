@@ -429,6 +429,10 @@ a.pill:hover {
 
 /* ── Search/filter bar (Birds Eye search pill) ────────────────────────── */
 .searchbar {
+  /* backdrop-filter makes this a stacking context, which traps the popovers'
+     z-index inside it. Lift the whole bar above the toolbar + deal cards. */
+  position: relative;
+  z-index: 20;
   margin: 34px auto 0;
   max-width: 920px;
   display: flex;
