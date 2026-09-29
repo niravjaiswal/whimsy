@@ -4,3 +4,6 @@ dist-server
 data
 *.log
 .env
+.vercel
+supabase/.temp
+.git

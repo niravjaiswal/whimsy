@@ -6,3 +6,5 @@ data
 *.db
 *.db-*
 data-server.log
+.vercel
+supabase/.temp
