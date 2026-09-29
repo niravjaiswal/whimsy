@@ -133,7 +133,7 @@ export async function migrate(db: DB, dir = findMigrationsDir()) {
     const sqlText = fs
       .readFileSync(path.join(dir, file), 'utf8')
       .split('\n')
-      .filter((l) => !/^\s*(REVOKE|GRANT)\b/i.test(l))
+      .filter((l) => !/^\s*(REVOKE|GRANT)\b/i.test(l) && !/\banon\b/.test(l))
       .join('\n');
     await db.exec(sqlText);
     await db.run('INSERT INTO _migrations (name) VALUES (?)', file);

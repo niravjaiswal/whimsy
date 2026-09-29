@@ -16,29 +16,39 @@ const provider = new GoogleFlightsProvider();
 /** Tables worth carrying over (catalog + price history). Alerts/outbox are test data. */
 const IMPORT_TABLES = ['routes', 'places', 'city_images', 'observations', 'deals'] as const;
 
-async function importSqlite(file: string, db: DB) {
+async function importSqlite(file: string, target: DB) {
   const { DatabaseSync } = await import('node:sqlite');
   const src = new DatabaseSync(file, { readOnly: true });
-  const existing = (await db.get<{ n: number }>('SELECT COUNT(*) AS n FROM routes'))!.n;
+  const existing = (await target.get<{ n: number }>('SELECT COUNT(*) AS n FROM routes'))!.n;
   if (existing > 0) throw new Error(`target already has ${existing} routes — import only into an empty database`);
-  const cols = async (table: string) =>
-    (await db.all<{ column_name: string }>('SELECT column_name FROM information_schema.columns WHERE table_name = ?', table)).map((c) => c.column_name);
-  for (const table of IMPORT_TABLES) {
-    const targetCols = new Set(await cols(table));
-    const rows = src.prepare(`SELECT * FROM ${table}`).all() as Record<string, unknown>[];
-    const keep = Object.keys(rows[0] ?? {}).filter((c) => targetCols.has(c));
-    for (let i = 0; i < rows.length; i += 500) {
-      const batch = rows.slice(i, i + 500).map((r) => Object.fromEntries(keep.map((k) => [k, r[k]])));
-      await db.run(
-        `INSERT INTO ${table} (${keep.join(', ')}) SELECT ${keep.join(', ')} FROM json_populate_recordset(NULL::${table}, ?::json)`,
-        JSON.stringify(batch),
+  // One transaction: a failed import leaves nothing half-copied.
+  await target.tx(async (db) => {
+    for (const table of IMPORT_TABLES) {
+      const colTypes = new Map(
+        (await db.all<{ column_name: string; data_type: string }>(
+          "SELECT column_name, data_type FROM information_schema.columns WHERE table_schema = 'public' AND table_name = ?",
+          table,
+        )).map((c) => [c.column_name, c.data_type]),
       );
+      const rows = src.prepare(`SELECT * FROM ${table}`).all() as Record<string, unknown>[];
+      const keep = Object.keys(rows[0] ?? {}).filter((c) => colTypes.has(c));
+      const isInt = (c: string) => ['integer', 'bigint', 'smallint'].includes(colTypes.get(c)!);
+      for (let i = 0; i < rows.length; i += 500) {
+        const batch = rows.slice(i, i + 500).map((r) =>
+          // v1 SQLite accepted floats in integer columns (jittered timestamps); Postgres won't.
+          Object.fromEntries(keep.map((k) => [k, typeof r[k] === 'number' && isInt(k) ? Math.round(r[k] as number) : r[k]])),
+        );
+        await db.run(
+          `INSERT INTO ${table} (${keep.join(', ')}) SELECT ${keep.join(', ')} FROM json_populate_recordset(NULL::${table}, (?::text)::json)`,
+          JSON.stringify(batch),
+        );
+      }
+      if (colTypes.has('id')) {
+        await db.run(`SELECT setval(pg_get_serial_sequence('${table}', 'id'), GREATEST((SELECT MAX(id) FROM ${table}), 1))`);
+      }
+      console.log(`  ${table}: ${rows.length} rows`);
     }
-    if (targetCols.has('id')) {
-      await db.run(`SELECT setval(pg_get_serial_sequence('${table}', 'id'), GREATEST((SELECT MAX(id) FROM ${table}), 1))`);
-    }
-    console.log(`  ${table}: ${rows.length} rows`);
-  }
+  });
   src.close();
 }
 

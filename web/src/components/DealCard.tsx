@@ -8,7 +8,7 @@ const WIKI_WIDTHS = [500, 960, 1280];
 const isWikimedia = (src: string) => /wikimedia\.org\/.+\/\d+px-/.test(src);
 const wikiSize = (src: string, w: number) => src.replace(/\/\d+px-([^/]+)$/, `/${w}px-$1`);
 
-export function CityImage({ src, alt, sizes }: { src: string | null; alt: string; sizes?: string }) {
+export function CityImage({ src, alt, sizes, eager }: { src: string | null; alt: string; sizes?: string; eager?: boolean }) {
   const [failed, setFailed] = useState(false);
   if (!src || failed) return null;
   const srcSet = isWikimedia(src) ? WIKI_WIDTHS.map((w) => `${wikiSize(src, w)} ${w}w`).join(', ') : undefined;
@@ -18,7 +18,8 @@ export function CityImage({ src, alt, sizes }: { src: string | null; alt: string
       srcSet={srcSet}
       sizes={srcSet ? (sizes ?? '(max-width: 640px) 100vw, 420px') : undefined}
       alt={alt}
-      loading="lazy"
+      loading={eager ? 'eager' : 'lazy'}
+      fetchPriority={eager ? 'high' : undefined}
       decoding="async"
       referrerPolicy="no-referrer"
       onError={() => setFailed(true)}

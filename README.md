@@ -19,30 +19,42 @@ it's going.
 - **Live UI**: the deals feed, world map ("Atlas"), deal pages with price history, the alert
   builder with a live match preview, and a scanner dashboard all update over SSE.
 
-## Run it
+## Run it locally
 
 ```bash
 npm install
 npm run dev          # API + scanner on :8787, Vite UI on :5173
 ```
 
-Open http://localhost:5173. The scanner starts immediately, and the first deals usually show up
-within a few minutes.
+Open http://localhost:5173. Locally the database is PGlite (Postgres compiled to
+WASM, stored in `data/pglite`), so there's nothing else to install. Set
+`DATABASE_URL` to use a real Postgres instead.
 
-Production (single process: API + scanner + static UI):
+## Production
+
+| Piece | Where | What |
+|---|---|---|
+| Frontend | **Vercel** — https://whimsy-gamma.vercel.app | Static Vite build (`vercel.json`); `VITE_API_URL` points at the API |
+| API + scanner + notifier | **Railway** — https://<your-api-host> | One long-running container (`Dockerfile`, `railway.json`, health check `/api/health`) |
+| Database | **Supabase** Postgres (project `<project-ref>`) | Schema in `supabase/migrations`; RLS on, Data API locked out |
+
+Deploying changes:
 
 ```bash
-npm run build
-npm start            # http://localhost:8787
+supabase db push                 # new migrations (after `supabase link`)
+railway up --service api         # backend
+vercel deploy --prod             # frontend
 ```
 
-Or with Docker:
+Railway variables: `DATABASE_URL` (Supabase session pooler, port 5432),
+`PUBLIC_URL`, `CORS_ORIGINS`, `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` /
+`VAPID_SUBJECT`, `SCAN_RPM`, `SCAN_CONCURRENCY`, `DATABASE_POOL_SIZE`. Add
+`SMTP_URL` (e.g. `smtps://resend:<key>@smtp.resend.com:465`) plus `EMAIL_FROM`
+to turn on email alerts — without it the email channel is hidden in production.
+Run exactly one Railway replica: the scanner and notifier are in-process.
 
-```bash
-docker build -t whimsy . && docker run -p 8787:8787 -v whimsy-data:/data whimsy
-```
-
-The scanner needs a long-running host (Fly.io, Railway, a VPS). Serverless won't work.
+`npx tsx server/cli.ts import-sqlite data/whimsy.db` copies a v1 SQLite database
+into an empty `DATABASE_URL`.
 
 ## Config
 

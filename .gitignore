@@ -8,3 +8,4 @@ data
 data-server.log
 .vercel
 supabase/.temp
+.env*

@@ -44,7 +44,7 @@ export function DealPage() {
       </div>
 
       <section className={`deal-hero ${d.destination.imageHd ? 'hd' : ''}`}>
-        <CityImage src={d.destination.image} alt="" sizes="(max-width: 1180px) 100vw, 1180px" />
+        <CityImage src={d.destination.image} alt="" sizes="(max-width: 1180px) 100vw, 1180px" eager />
         {d.destination.imageCredit && (
           <a
             className="photo-credit"
