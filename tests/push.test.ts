@@ -48,27 +48,26 @@ function fakeSubscription(p: string) {
 }
 
 describe('web push', () => {
-  it('persists VAPID keys once', () => {
-    const db = memDb();
-    expect(vapidKeys(db)).toEqual(vapidKeys(db));
+  it('persists VAPID keys once', async () => {
+    const db = await memDb();
+    expect(await vapidKeys(db)).toEqual(await vapidKeys(db));
   });
 
   it('sends an encrypted, VAPID-signed push and prunes dead subscriptions', async () => {
-    const db = memDb();
-    const alert = createAlert(db, { channels: { push: true } });
-    const insert = db.prepare('INSERT INTO push_subscriptions (alert_id, endpoint, subscription, created_at) VALUES (?, ?, ?, ?)');
+    const db = await memDb();
+    const alert = await createAlert(db, { channels: { push: true } });
     for (const p of ['/ok', '/gone']) {
       const sub = fakeSubscription(p);
-      insert.run(alert.id, sub.endpoint, JSON.stringify(sub), Date.now());
+      await db.run('INSERT INTO push_subscriptions (alert_id, endpoint, subscription, created_at) VALUES (?, ?, ?, ?)', alert.id, sub.endpoint, JSON.stringify(sub), Date.now());
     }
-    const deal = recordResult(db, addRoute(db), fare({ price: 400 }))!.deal;
+    const deal = (await recordResult(db, await addRoute(db), fare({ price: 400 })))!.deal;
     const r = await sendPush(db, alert.id, buildMessage([deal], 'https://x/alerts/t'));
     expect(r).toEqual({ sent: 1, failed: 1 });
     const ok = hits.find((h) => h.url === '/ok')!;
     expect(ok.headers['content-encoding']).toBe('aes128gcm');
     expect(ok.headers.authorization).toMatch(/^vapid t=/);
     expect(ok.bytes).toBeGreaterThan(100);
-    const left = db.prepare('SELECT endpoint FROM push_subscriptions').all() as { endpoint: string }[];
+    const left = (await db.all('SELECT endpoint FROM push_subscriptions')) as { endpoint: string }[];
     expect(left.map((x) => x.endpoint)).toEqual([`https://127.0.0.1:${port}/ok`]);
   });
 });

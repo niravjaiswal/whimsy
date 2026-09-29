@@ -10,6 +10,13 @@ export const config = {
   /** Comma-separated IATA codes to scan from. Defaults to every hub in airports.ts. */
   origins: process.env.ORIGINS?.split(',').map((s) => s.trim().toUpperCase()).filter(Boolean),
   smtpUrl: process.env.SMTP_URL,
+  /**
+   * Email alerts need a real mail server in production. Without SMTP_URL, dev
+   * keeps emails in the outbox table; production hides the email channel.
+   */
+  emailEnabled: !!process.env.SMTP_URL || process.env.NODE_ENV !== 'production',
+  /** Browser origins allowed to call the API (e.g. the Vercel frontend). */
+  corsOrigins: (process.env.CORS_ORIGINS ?? '').split(',').map((s) => s.trim().replace(/\/$/, '')).filter(Boolean),
   emailFrom: process.env.EMAIL_FROM ?? 'Whimsy <deals@whimsy.local>',
   ntfyServer: (process.env.NTFY_SERVER ?? 'https://ntfy.sh').replace(/\/$/, ''),
   vapidSubject: process.env.VAPID_SUBJECT ?? 'mailto:deals@whimsy.local',

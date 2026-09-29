@@ -2,13 +2,19 @@ import { openDb, type DB } from '../server/db.js';
 import type { FareQuery, FareResult, PriceInsight } from '../server/providers/types.js';
 import type { RouteRow } from '../server/routes.js';
 
-export function memDb(): DB {
-  return openDb(':memory:');
+// PGlite boots in ~1s; share one per test worker and wipe it between tests.
+let shared: Promise<DB> | null = null;
+export async function memDb(): Promise<DB> {
+  shared ??= openDb(':memory:');
+  const db = await shared;
+  const tables = (await db.all<{ tablename: string }>("SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename <> '_migrations'")).map((t) => t.tablename);
+  await db.exec(`TRUNCATE ${tables.join(', ')} RESTART IDENTITY CASCADE`);
+  return db;
 }
 
-export function addRoute(db: DB, origin = 'DTW', destination = 'LIS', distance = 3800): RouteRow {
-  db.prepare('INSERT INTO routes (origin, destination, distance, next_scan_at) VALUES (?, ?, ?, 0)').run(origin, destination, distance);
-  return db.prepare('SELECT * FROM routes WHERE origin = ? AND destination = ?').get(origin, destination) as unknown as RouteRow;
+export async function addRoute(db: DB, origin = 'DTW', destination = 'LIS', distance = 3800): Promise<RouteRow> {
+  (await db.run('INSERT INTO routes (origin, destination, distance, next_scan_at) VALUES (?, ?, ?, 0)', origin, destination, distance));
+  return (await db.get('SELECT * FROM routes WHERE origin = ? AND destination = ?', origin, destination)) as unknown as RouteRow;
 }
 
 export function insight(typical: number, low = Math.round(typical * 0.8), high = Math.round(typical * 1.2)): PriceInsight {

@@ -42,29 +42,37 @@ export function buildRouteMatrix(airports: Airport[] = AIRPORTS, originCodes?: s
  * Insert any missing routes. Existing rows keep their scan state. New routes are
  * spread across the next few minutes so a fresh install fans out immediately.
  */
-export function seedRoutes(db: DB, originCodes?: string[]): number {
+export async function seedRoutes(db: DB, originCodes?: string[]): Promise<number> {
   const matrix = buildRouteMatrix(AIRPORTS, originCodes);
-  const insert = db.prepare(
-    'INSERT OR IGNORE INTO routes (origin, destination, distance, next_scan_at) VALUES (?, ?, ?, ?)',
-  );
   const now = Date.now();
-  let added = 0;
-  db.exec('BEGIN');
   // Shuffle so the first sweep samples the whole map, not one origin at a time.
-  const shuffled = [...matrix].sort(() => Math.random() - 0.5);
-  shuffled.forEach((r, i) => {
-    const res = insert.run(r.origin, r.destination, r.distance, now + i);
-    added += Number(res.changes);
-  });
-  db.exec('COMMIT');
+  const shuffled = [...matrix];
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+  // One round trip per batch: matters when the database is across the network.
+  let added = 0;
+  for (let i = 0; i < shuffled.length; i += 1000) {
+    const batch = shuffled.slice(i, i + 1000);
+    const res = await db.run(
+      `INSERT INTO routes (origin, destination, distance, next_scan_at)
+       SELECT * FROM unnest(?::text[], ?::text[], ?::int[], ?::bigint[])
+       ON CONFLICT (origin, destination) DO NOTHING`,
+      batch.map((r) => r.origin),
+      batch.map((r) => r.destination),
+      batch.map((r) => r.distance),
+      batch.map((_, k) => now + i + k),
+    );
+    added += res.changes;
+  }
   // Stagger where each unscanned route starts in its date rotation so the first
   // sweep probes the whole 3-week → 7-month window, not just the nearest slot.
   const slots = LEAD_WEEKS.length * 3;
-  db.prepare(`UPDATE routes SET sample_cursor = abs(random()) % ${slots} WHERE scan_count = 0 AND sample_cursor = 0`).run();
+  await db.run(`UPDATE routes SET sample_cursor = floor(random() * ${slots})::int WHERE scan_count = 0 AND sample_cursor = 0`);
   if (originCodes) {
     // Disable routes whose origin was removed from the configured list.
-    const placeholders = originCodes.map(() => '?').join(',');
-    db.prepare(`UPDATE routes SET enabled = CASE WHEN origin IN (${placeholders}) THEN 1 ELSE 0 END`).run(...originCodes);
+    await db.run('UPDATE routes SET enabled = CASE WHEN origin = ANY(?::text[]) THEN 1 ELSE 0 END', originCodes);
   }
   return added;
 }

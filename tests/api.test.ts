@@ -4,8 +4,8 @@ import { createApi } from '../server/api.js';
 import { recordResult } from '../server/deals.js';
 import { addRoute, fare, memDb } from './helpers.js';
 
-function setup() {
-  const db = memDb();
+async function setup() {
+  const db = await memDb();
   const api = createApi({ db, bus: new EventEmitter() });
   const json = (path: string, init?: RequestInit) =>
     api.request(path, { ...init, headers: { 'content-type': 'application/json', ...(init?.headers ?? {}) } });
@@ -14,7 +14,7 @@ function setup() {
 
 describe('api', () => {
   it('serves meta with airports, regions and a VAPID key', async () => {
-    const { json } = setup();
+    const { json } = await setup();
     const m = await (await json('/meta')).json();
     expect(m.airports.length).toBeGreaterThan(100);
     expect(m.regions.find((r: any) => r.id === 'europe')).toBeTruthy();
@@ -22,9 +22,9 @@ describe('api', () => {
   });
 
   it('lists and filters deals', async () => {
-    const { db, json } = setup();
-    recordResult(db, addRoute(db), fare({ price: 400 }));
-    recordResult(db, addRoute(db, 'ORD', 'NRT', 6300), fare({ origin: 'ORD', destination: 'NRT', price: 560, typical: 800 }));
+    const { db, json } = await setup();
+    await recordResult(db, await addRoute(db), fare({ price: 400 }));
+    await recordResult(db, await addRoute(db, 'ORD', 'NRT', 6300), fare({ origin: 'ORD', destination: 'NRT', price: 560, typical: 800 }));
     const all = await (await json('/deals')).json();
     expect(all.total).toBe(2);
     expect(all.deals[0].destination).toMatchObject({ code: expect.any(String), city: expect.any(String) });
@@ -42,9 +42,9 @@ describe('api', () => {
   });
 
   it('returns deal detail with related deals', async () => {
-    const { db, json } = setup();
-    recordResult(db, addRoute(db), fare({ price: 400 }));
-    recordResult(db, addRoute(db, 'ORD', 'LIS'), fare({ origin: 'ORD', price: 420 }));
+    const { db, json } = await setup();
+    await recordResult(db, await addRoute(db), fare({ price: 400 }));
+    await recordResult(db, await addRoute(db, 'ORD', 'LIS'), fare({ origin: 'ORD', price: 420 }));
     const r = await (await json('/deals/dtw-lis-2026-11-10-2026-11-17')).json();
     expect(r.deal).toMatchObject({ price: 400, nights: 7, tier: 'incredible', via: ['EWR'] });
     expect(r.deal.history.length).toBe(30);
@@ -53,8 +53,8 @@ describe('api', () => {
   });
 
   it('creates, reads, updates, previews and deletes an alert', async () => {
-    const { db, json } = setup();
-    recordResult(db, addRoute(db), fare({ price: 400 }));
+    const { db, json } = await setup();
+    await recordResult(db, await addRoute(db), fare({ price: 400 }));
     const bad = await json('/alerts', { method: 'POST', body: JSON.stringify({ channels: {} }) });
     expect(bad.status).toBe(400);
     const res = await json('/alerts', {
@@ -67,7 +67,7 @@ describe('api', () => {
     expect(alert.id).toBeUndefined();
     expect(alert.manageUrl).toContain(`/alerts/${alert.token}`);
     // Welcome email lands in the dev outbox.
-    expect((db.prepare('SELECT COUNT(*) n FROM outbox').get() as any).n).toBe(1);
+    expect(((await db.get('SELECT COUNT(*) n FROM outbox')) as any).n).toBe(1);
 
     const got = await (await json(`/alerts/${alert.token}`)).json();
     expect(got.matches).toHaveLength(1);
@@ -86,7 +86,7 @@ describe('api', () => {
   });
 
   it('validates push subscriptions', async () => {
-    const { json } = setup();
+    const { json } = await setup();
     const { alert } = await (await json('/alerts', { method: 'POST', body: JSON.stringify({ channels: { ntfy: 'whimsy-test-123' } }) })).json();
     const bad = await json(`/alerts/${alert.token}/push`, { method: 'POST', body: JSON.stringify({ subscription: { endpoint: 'x' } }) });
     expect(bad.status).toBe(400);
@@ -101,15 +101,15 @@ describe('api', () => {
   });
 
   it('does not create an alert when its push subscription is invalid', async () => {
-    const { db, json } = setup();
+    const { db, json } = await setup();
     const res = await json('/alerts', { method: 'POST', body: JSON.stringify({ channels: { push: true }, pushSubscription: { endpoint: 'nope' } }) });
     expect(res.status).toBe(400);
-    expect((db.prepare('SELECT COUNT(*) n FROM alerts').get() as any).n).toBe(0);
+    expect(((await db.get('SELECT COUNT(*) n FROM alerts')) as any).n).toBe(0);
   });
 
   it('reports stats', async () => {
-    const { db, json } = setup();
-    addRoute(db);
+    const { db, json } = await setup();
+    await addRoute(db);
     const s = await (await json('/stats')).json();
     expect(s).toMatchObject({ routes: 1, activeDeals: 0, alerts: 0 });
   });

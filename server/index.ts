@@ -5,6 +5,7 @@ import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { Hono } from 'hono';
 import { compress } from 'hono/compress';
+import { cors } from 'hono/cors';
 import { enqueueMatches } from './alerts.js';
 import { createApi } from './api.js';
 import { config } from './config.js';
@@ -15,8 +16,10 @@ import { GoogleFlightsProvider } from './providers/google.js';
 import { seedRoutes } from './routes.js';
 import { Scanner } from './scanner.js';
 
-const db = openDb();
-const added = seedRoutes(db, config.origins);
+const db = await openDb();
+await db.get('SELECT 1'); // fail fast on a bad DATABASE_URL
+console.log(`[whimsy] database: ${db.kind}`);
+const added = await seedRoutes(db, config.origins);
 console.log(`[whimsy] ${added} new routes seeded`);
 
 const bus = new EventEmitter();
@@ -35,8 +38,11 @@ scanner.on('scan', (e) => {
 scanner.on('deal', (e) => {
   bus.emit('deal', e);
   if (e.kind === 'new' || e.kind === 'dropped') {
-    const queued = enqueueMatches(db, e.deal);
-    console.log(`[deal] ${e.kind} ${e.deal.slug} $${e.deal.price} −${Math.round(e.deal.discount * 100)}% (${e.deal.tier}) → ${queued} alert(s)`);
+    enqueueMatches(db, e.deal)
+      .then((queued) =>
+        console.log(`[deal] ${e.kind} ${e.deal.slug} $${e.deal.price} −${Math.round(e.deal.discount * 100)}% (${e.deal.tier}) → ${queued} alert(s)`),
+      )
+      .catch((err) => console.error('[deal] enqueue failed', err));
   } else if (e.kind === 'expired') {
     console.log(`[deal] expired ${e.deal.slug}`);
   }
@@ -56,11 +62,13 @@ setInterval(async () => {
   }
 }, config.notifyFlushMs).unref();
 
-setInterval(() => {
-  const { expired } = scanner.maintain();
-  if (expired) console.log(`[maintain] expired ${expired} stale deal(s)`);
-}, 10 * 60_000).unref();
-scanner.maintain();
+const maintain = () =>
+  scanner
+    .maintain()
+    .then(({ expired }) => expired && console.log(`[maintain] expired ${expired} stale deal(s)`))
+    .catch((err) => console.error('[maintain]', err));
+setInterval(maintain, 10 * 60_000).unref();
+void maintain();
 
 if (config.scannerEnabled) scanner.start();
 
@@ -69,7 +77,18 @@ void syncCityImages(db).catch((err) => console.warn('[images] sync failed', err)
 setInterval(() => void syncCityImages(db).catch(() => {}), 24 * 3600_000).unref();
 
 const app = new Hono();
+if (config.corsOrigins.length) {
+  app.use('/api/*', cors({ origin: config.corsOrigins, allowMethods: ['GET', 'POST', 'PATCH', 'DELETE'], maxAge: 86400 }));
+}
 app.use('*', compress());
+app.get('/api/health', async (c) => {
+  try {
+    await db.get('SELECT 1');
+    return c.json({ ok: true, db: db.kind, scanner: scanner.status() });
+  } catch (err) {
+    return c.json({ ok: false, error: (err as Error).message }, 503);
+  }
+});
 app.route('/api', createApi({ db, scanner, bus }));
 app.all('/api/*', (c) => c.json({ error: 'Not found' }, 404));
 
@@ -86,15 +105,19 @@ if (fs.existsSync(indexHtml)) {
   app.get('*', (c) => c.html(index));
 }
 
-serve({ fetch: app.fetch, port: config.port }, (info) => {
-  console.log(`[whimsy] listening on http://localhost:${info.port} (scanner ${config.scannerEnabled ? `on @ ${config.scanRpm} rpm` : 'off'})`);
+const server = serve({ fetch: app.fetch, port: config.port, hostname: '0.0.0.0' }, (info) => {
+  console.log(`[whimsy] listening on :${info.port} (scanner ${config.scannerEnabled ? `on @ ${config.scanRpm} rpm` : 'off'})`);
 });
 
 process.on('unhandledRejection', (err) => console.error('[whimsy] unhandled rejection', err));
 
-const shutdown = () => {
+let shuttingDown = false;
+const shutdown = async () => {
+  if (shuttingDown) return;
+  shuttingDown = true;
   scanner.stop();
-  db.close();
+  server.close();
+  await db.close().catch(() => {});
   process.exit(0);
 };
 process.on('SIGINT', shutdown);

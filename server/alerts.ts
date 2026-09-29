@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { AIRPORT_BY_CODE, REGION_LABELS, type Region } from './airports.js';
+import { config } from './config.js';
 import type { DB } from './db.js';
 import { TIER_RANK, TIERS, type DealRow, type Tier } from './deals.js';
 import { matchesWhen, normalizeWhen, type WhenFilter } from './when.js';
@@ -116,6 +117,7 @@ export function normalizeAlertInput(input: AlertInput): Omit<Alert, 'id' | 'toke
   const ch = input.channels ?? {};
   const channels: AlertChannels = {};
   if (ch.email) {
+    if (!config.emailEnabled) throw new ValidationError('Email alerts aren’t available yet — use push, ntfy or a webhook');
     if (!email) throw new ValidationError('Add an email to get email alerts');
     channels.email = true;
   }
@@ -144,45 +146,39 @@ export function normalizeAlertInput(input: AlertInput): Omit<Alert, 'id' | 'toke
   return { name, email, origins, regions, destinations, maxPrice, minTier, ...when, channels, frequency, paused: !!input.paused };
 }
 
-export function createAlert(db: DB, input: AlertInput, now = Date.now()): Alert {
+export async function createAlert(db: DB, input: AlertInput, now = Date.now()): Promise<Alert> {
   const a = normalizeAlertInput(input);
   const token = crypto.randomBytes(18).toString('base64url');
-  const res = db
-    .prepare(
-      `INSERT INTO alerts (token, name, email, origins, regions, destinations, max_price, min_tier, months, depart_from, depart_to,
+  const res = (await db.run(`INSERT INTO alerts (token, name, email, origins, regions, destinations, max_price, min_tier, months, depart_from, depart_to,
          min_nights, max_nights, channels, frequency, paused, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    )
-    .run(token, a.name, a.email, JSON.stringify(a.origins), JSON.stringify(a.regions), JSON.stringify(a.destinations), a.maxPrice, a.minTier,
-      JSON.stringify(a.months), a.departFrom, a.departTo, a.minNights, a.maxNights, JSON.stringify(a.channels), a.frequency, a.paused ? 1 : 0, now);
-  return getAlertById(db, Number(res.lastInsertRowid))!;
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`, token, a.name, a.email, JSON.stringify(a.origins), JSON.stringify(a.regions), JSON.stringify(a.destinations), a.maxPrice, a.minTier,
+      JSON.stringify(a.months), a.departFrom, a.departTo, a.minNights, a.maxNights, JSON.stringify(a.channels), a.frequency, a.paused ? 1 : 0, now));
+  return rowToAlert(res.rows[0] as AlertRowDb);
 }
 
-export function updateAlert(db: DB, token: string, input: AlertInput): Alert | null {
-  const current = getAlertByToken(db, token);
+export async function updateAlert(db: DB, token: string, input: AlertInput): Promise<Alert | null> {
+  const current = await getAlertByToken(db, token);
   if (!current) return null;
   const a = normalizeAlertInput({ ...current, ...input });
-  db.prepare(
-    `UPDATE alerts SET name=?, email=?, origins=?, regions=?, destinations=?, max_price=?, min_tier=?, months=?, depart_from=?, depart_to=?,
+  (await db.run(`UPDATE alerts SET name=?, email=?, origins=?, regions=?, destinations=?, max_price=?, min_tier=?, months=?, depart_from=?, depart_to=?,
        min_nights=?, max_nights=?, channels=?, frequency=?, paused=?
-     WHERE token = ?`,
-  ).run(a.name, a.email, JSON.stringify(a.origins), JSON.stringify(a.regions), JSON.stringify(a.destinations), a.maxPrice, a.minTier,
-    JSON.stringify(a.months), a.departFrom, a.departTo, a.minNights, a.maxNights, JSON.stringify(a.channels), a.frequency, a.paused ? 1 : 0, token);
-  return getAlertByToken(db, token);
+     WHERE token = ?`, a.name, a.email, JSON.stringify(a.origins), JSON.stringify(a.regions), JSON.stringify(a.destinations), a.maxPrice, a.minTier,
+    JSON.stringify(a.months), a.departFrom, a.departTo, a.minNights, a.maxNights, JSON.stringify(a.channels), a.frequency, a.paused ? 1 : 0, token));
+  return await getAlertByToken(db, token);
 }
 
-export function getAlertByToken(db: DB, token: string): Alert | null {
-  const r = db.prepare('SELECT * FROM alerts WHERE token = ?').get(token) as AlertRowDb | undefined;
+export async function getAlertByToken(db: DB, token: string): Promise<Alert | null> {
+  const r = (await db.get('SELECT * FROM alerts WHERE token = ?', token)) as AlertRowDb | undefined;
   return r ? rowToAlert(r) : null;
 }
 
-export function getAlertById(db: DB, id: number): Alert | null {
-  const r = db.prepare('SELECT * FROM alerts WHERE id = ?').get(id) as AlertRowDb | undefined;
+export async function getAlertById(db: DB, id: number): Promise<Alert | null> {
+  const r = (await db.get('SELECT * FROM alerts WHERE id = ?', id)) as AlertRowDb | undefined;
   return r ? rowToAlert(r) : null;
 }
 
-export function deleteAlert(db: DB, token: string): boolean {
-  return Number(db.prepare('DELETE FROM alerts WHERE token = ?').run(token).changes) > 0;
+export async function deleteAlert(db: DB, token: string): Promise<boolean> {
+  return (await db.run('DELETE FROM alerts WHERE token = ?', token)).changes > 0;
 }
 
 /** Does this deal satisfy the alert's filters? */
@@ -207,24 +203,22 @@ export function matchesAlert(
  * Queue this deal for every alert it matches. We only re-queue a deal an alert
  * already heard about if the price fell another 10%+.
  */
-export function enqueueMatches(db: DB, deal: DealRow, now = Date.now()): number {
-  const rows = db.prepare('SELECT * FROM alerts WHERE paused = 0').all() as unknown as AlertRowDb[];
+export async function enqueueMatches(db: DB, deal: DealRow, now = Date.now()): Promise<number> {
+  const rows = (await db.all('SELECT * FROM alerts WHERE paused = 0')) as unknown as AlertRowDb[];
   let queued = 0;
   for (const r of rows) {
     const alert = rowToAlert(r);
     if (!matchesAlert(alert, deal)) continue;
-    const prev = db
-      .prepare('SELECT MIN(price) AS p FROM alert_matches WHERE alert_id = ? AND deal_id = ?')
-      .get(alert.id, deal.id) as { p: number | null };
+    const prev = (await db.get('SELECT MIN(price) AS p FROM alert_matches WHERE alert_id = ? AND deal_id = ?', alert.id, deal.id)) as { p: number | null };
     if (prev.p != null && deal.price > prev.p * 0.9) continue;
-    db.prepare('INSERT INTO alert_matches (alert_id, deal_id, price, created_at) VALUES (?, ?, ?, ?)').run(alert.id, deal.id, deal.price, now);
+    (await db.run('INSERT INTO alert_matches (alert_id, deal_id, price, created_at) VALUES (?, ?, ?, ?)', alert.id, deal.id, deal.price, now));
     queued++;
   }
   return queued;
 }
 
 /** Deals currently live that an alert would match — powers the "preview" in the builder. */
-export function previewMatches(db: DB, alert: Alert, limit = 12): DealRow[] {
-  const deals = db.prepare("SELECT * FROM deals WHERE status = 'active' ORDER BY score DESC").all() as unknown as DealRow[];
+export async function previewMatches(db: DB, alert: Alert, limit = 12): Promise<DealRow[]> {
+  const deals = (await db.all("SELECT * FROM deals WHERE status = 'active' ORDER BY score DESC")) as unknown as DealRow[];
   return deals.filter((d) => matchesAlert({ ...alert, paused: false }, d)).slice(0, limit);
 }

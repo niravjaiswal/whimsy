@@ -155,18 +155,22 @@ const REFRESH_MS = 30 * 86400_000;
  */
 export async function syncCityImages(db: DB, { airports = AIRPORTS, delayMs = 1000, log = console.log, fetcher = lookupBatch } = {}) {
   const fresh = new Set(
-    (db.prepare('SELECT code FROM city_images WHERE fetched_at > ?').all(Date.now() - REFRESH_MS) as { code: string }[]).map((r) => r.code),
+    ((await db.all('SELECT code FROM city_images WHERE fetched_at > ?', Date.now() - REFRESH_MS)) as { code: string }[]).map((r) => r.code),
   );
   const todo = airports.filter((a) => !fresh.has(a.code));
   if (!todo.length) return { checked: 0, found: 0 };
   const images = await findCityImages(todo, fetcher, delayMs);
-  const upsert = db.prepare(
-    `INSERT INTO city_images (code, url, file, title, fetched_at) VALUES (?, ?, ?, ?, ?)
-     ON CONFLICT(code) DO UPDATE SET url = excluded.url, file = excluded.file, title = excluded.title, fetched_at = excluded.fetched_at`,
-  );
   let found = 0;
   for (const [code, img] of images) {
-    upsert.run(code, img?.url ?? null, img?.file ?? null, img?.title ?? null, Date.now());
+    await db.run(
+      `INSERT INTO city_images (code, url, file, title, fetched_at) VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT (code) DO UPDATE SET url = excluded.url, file = excluded.file, title = excluded.title, fetched_at = excluded.fetched_at`,
+      code,
+      img?.url ?? null,
+      img?.file ?? null,
+      img?.title ?? null,
+      Date.now(),
+    );
     if (img) found++;
   }
   log(`[images] ${found}/${todo.length} city photos resolved`);

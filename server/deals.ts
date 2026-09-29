@@ -106,10 +106,8 @@ export interface DealRow {
 export const dealSlug = (q: FareQuery) =>
   `${q.origin}-${q.destination}-${q.departDate}${q.returnDate ? `-${q.returnDate}` : ''}`.toLowerCase();
 
-export function ownStats(db: DB, routeId: number, now = Date.now()): OwnStats {
-  const rows = db
-    .prepare('SELECT price FROM observations WHERE route_id = ? AND observed_at > ?')
-    .all(routeId, now - 60 * 86400_000) as { price: number }[];
+export async function ownStats(db: DB, routeId: number, now = Date.now()): Promise<OwnStats> {
+  const rows = (await db.all('SELECT price FROM observations WHERE route_id = ? AND observed_at > ?', routeId, now - 60 * 86400_000)) as { price: number }[];
   return { median: median(rows.map((r) => r.price)), count: rows.length };
 }
 
@@ -119,39 +117,35 @@ export type DealEvent = { kind: 'new' | 'dropped' | 'refreshed' | 'expired'; dea
  * Persist a scan result: observation, place metadata, and deal upsert/expiry.
  * Returns what happened to the deal for this exact date pair, if anything.
  */
-export function recordResult(db: DB, route: RouteRow, result: FareResult, now = Date.now()): DealEvent | null {
+export async function recordResult(db: DB, route: RouteRow, result: FareResult, now = Date.now()): Promise<DealEvent | null> {
   const q = result.query;
   const cheapest = result.cheapest;
   const ins = result.insight;
 
   for (const place of [result.origin, result.destination]) {
     if (place?.code) {
-      db.prepare(
-        `INSERT INTO places (code, city, country, image, updated_at) VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT(code) DO UPDATE SET city = COALESCE(excluded.city, city), country = COALESCE(excluded.country, country),
-           image = COALESCE(excluded.image, image), updated_at = excluded.updated_at`,
-      ).run(place.code, place.city, place.country, place.image, now);
+      (await db.run(`INSERT INTO places (code, city, country, image, updated_at) VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT (code) DO UPDATE SET city = COALESCE(excluded.city, places.city), country = COALESCE(excluded.country, places.country),
+           image = COALESCE(excluded.image, places.image), updated_at = excluded.updated_at`, place.code, place.city, place.country, place.image, now));
     }
   }
 
   const slug = dealSlug(q);
-  const existing = db.prepare('SELECT * FROM deals WHERE slug = ?').get(slug) as DealRow | undefined;
+  const existing = (await db.get('SELECT * FROM deals WHERE slug = ?', slug)) as DealRow | undefined;
 
   if (!cheapest) {
-    if (existing?.status === 'active') return expireDeal(db, existing, now);
+    if (existing?.status === 'active') return await expireDeal(db, existing, now);
     return null;
   }
 
-  const stats = ownStats(db, route.id, now);
-  db.prepare(
-    `INSERT INTO observations (route_id, depart_date, return_date, price, typical, typical_low, typical_high, level, observed_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(route.id, q.departDate, q.returnDate ?? null, cheapest.price, ins?.typical ?? null, ins?.typicalLow ?? null, ins?.typicalHigh ?? null, ins?.level ?? null, now);
-  db.prepare('UPDATE routes SET last_price = ?, last_typical = ? WHERE id = ?').run(cheapest.price, ins?.typical ?? null, route.id);
+  const stats = await ownStats(db, route.id, now);
+  (await db.run(`INSERT INTO observations (route_id, depart_date, return_date, price, typical, typical_low, typical_high, level, observed_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, route.id, q.departDate, q.returnDate ?? null, cheapest.price, ins?.typical ?? null, ins?.typicalLow ?? null, ins?.typicalHigh ?? null, ins?.level ?? null, now));
+  (await db.run('UPDATE routes SET last_price = ?, last_typical = ? WHERE id = ?', cheapest.price, ins?.typical ?? null, route.id));
 
   const s = scoreFare(cheapest.price, ins, stats, route.distance);
   if (!s?.tier) {
-    if (existing?.status === 'active') return expireDeal(db, existing, now);
+    if (existing?.status === 'active') return await expireDeal(db, existing, now);
     return null;
   }
 
@@ -177,47 +171,34 @@ export function recordResult(db: DB, route: RouteRow, result: FareResult, now = 
   if (existing) {
     const reactivated = existing.status !== 'active';
     const dropped = cheapest.price <= existing.price * 0.95;
-    db.prepare(
-      `UPDATE deals SET price=?, baseline=?, typical_low=?, typical_high=?, discount=?, tier=?, score=?, airline=?, airline_code=?,
+    (await db.run(`UPDATE deals SET price=?, baseline=?, typical_low=?, typical_high=?, discount=?, tier=?, score=?, airline=?, airline_code=?,
          stops=?, duration_minutes=?, depart_time=?, arrive_time=?, via=?, history=?, booking_url=?, status='active',
          updated_at=?, verified_at=?, expired_at=NULL ${reactivated ? ', found_at = ?, first_price = ?' : ''}
-       WHERE id = ?`,
-    ).run(
-      ...Object.values(fields),
+       WHERE id = ?`, ...Object.values(fields),
       now,
       now,
       ...(reactivated ? [now, cheapest.price] : []),
-      existing.id,
-    );
-    const deal = db.prepare('SELECT * FROM deals WHERE id = ?').get(existing.id) as unknown as DealRow;
+      existing.id,));
+    const deal = (await db.get('SELECT * FROM deals WHERE id = ?', existing.id)) as unknown as DealRow;
     return { kind: reactivated ? 'new' : dropped ? 'dropped' : 'refreshed', deal };
   }
 
-  const res = db
-    .prepare(
-      `INSERT INTO deals (slug, route_id, origin, destination, depart_date, return_date, first_price, found_at, updated_at, verified_at,
+  const res = (await db.run(`INSERT INTO deals (slug, route_id, origin, destination, depart_date, return_date, first_price, found_at, updated_at, verified_at,
          price, baseline, typical_low, typical_high, discount, tier, score, airline, airline_code, stops, duration_minutes,
          depart_time, arrive_time, via, history, booking_url)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    )
-    .run(slug, route.id, q.origin, q.destination, q.departDate, q.returnDate ?? null, cheapest.price, now, now, now, ...Object.values(fields));
-  const deal = db.prepare('SELECT * FROM deals WHERE id = ?').get(res.lastInsertRowid) as unknown as DealRow;
-  return { kind: 'new', deal };
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`, slug, route.id, q.origin, q.destination, q.departDate, q.returnDate ?? null, cheapest.price, now, now, now, ...Object.values(fields)));
+  return { kind: 'new', deal: res.rows[0] as DealRow };
 }
 
-function expireDeal(db: DB, deal: DealRow, now: number): DealEvent {
-  db.prepare("UPDATE deals SET status = 'expired', expired_at = ?, updated_at = ? WHERE id = ?").run(now, now, deal.id);
+async function expireDeal(db: DB, deal: DealRow, now: number): Promise<DealEvent> {
+  (await db.run("UPDATE deals SET status = 'expired', expired_at = ?, updated_at = ? WHERE id = ?", now, now, deal.id));
   return { kind: 'expired', deal: { ...deal, status: 'expired', expired_at: now } };
 }
 
 /** Expire deals whose departure is too close or which haven't been re-verified in a while. */
-export function sweepStaleDeals(db: DB, now = Date.now(), maxUnverifiedMs = 36 * 3600_000): number {
+export async function sweepStaleDeals(db: DB, now = Date.now(), maxUnverifiedMs = 36 * 3600_000): Promise<number> {
   const tomorrow = new Date(now + 86400_000).toISOString().slice(0, 10);
-  const res = db
-    .prepare(
-      `UPDATE deals SET status = 'expired', expired_at = ?, updated_at = ?
-       WHERE status = 'active' AND (depart_date <= ? OR verified_at < ?)`,
-    )
-    .run(now, now, tomorrow, now - maxUnverifiedMs);
+  const res = (await db.run(`UPDATE deals SET status = 'expired', expired_at = ?, updated_at = ?
+       WHERE status = 'active' AND (depart_date <= ? OR verified_at < ?)`, now, now, tomorrow, now - maxUnverifiedMs));
   return Number(res.changes);
 }

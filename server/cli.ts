@@ -1,16 +1,46 @@
 /**
  * Handy one-offs:
- *   npm run scan:once -- 20        scan the 20 most overdue routes and exit
+ *   npm run scan:once -- 20                         scan the 20 most overdue routes and exit
  *   tsx server/cli.ts quote JFK LIS 2026-11-10 2026-11-17
+ *   tsx server/cli.ts import-sqlite data/whimsy.db  copy a v1 SQLite database into DATABASE_URL
  */
-import { openDb } from './db.js';
+import { config } from './config.js';
+import { openDb, type DB } from './db.js';
 import { GoogleFlightsProvider } from './providers/google.js';
 import { seedRoutes } from './routes.js';
 import { Scanner } from './scanner.js';
-import { config } from './config.js';
 
 const [cmd, ...args] = process.argv.slice(2);
 const provider = new GoogleFlightsProvider();
+
+/** Tables worth carrying over (catalog + price history). Alerts/outbox are test data. */
+const IMPORT_TABLES = ['routes', 'places', 'city_images', 'observations', 'deals'] as const;
+
+async function importSqlite(file: string, db: DB) {
+  const { DatabaseSync } = await import('node:sqlite');
+  const src = new DatabaseSync(file, { readOnly: true });
+  const existing = (await db.get<{ n: number }>('SELECT COUNT(*) AS n FROM routes'))!.n;
+  if (existing > 0) throw new Error(`target already has ${existing} routes — import only into an empty database`);
+  const cols = async (table: string) =>
+    (await db.all<{ column_name: string }>('SELECT column_name FROM information_schema.columns WHERE table_name = ?', table)).map((c) => c.column_name);
+  for (const table of IMPORT_TABLES) {
+    const targetCols = new Set(await cols(table));
+    const rows = src.prepare(`SELECT * FROM ${table}`).all() as Record<string, unknown>[];
+    const keep = Object.keys(rows[0] ?? {}).filter((c) => targetCols.has(c));
+    for (let i = 0; i < rows.length; i += 500) {
+      const batch = rows.slice(i, i + 500).map((r) => Object.fromEntries(keep.map((k) => [k, r[k]])));
+      await db.run(
+        `INSERT INTO ${table} (${keep.join(', ')}) SELECT ${keep.join(', ')} FROM json_populate_recordset(NULL::${table}, ?::json)`,
+        JSON.stringify(batch),
+      );
+    }
+    if (targetCols.has('id')) {
+      await db.run(`SELECT setval(pg_get_serial_sequence('${table}', 'id'), GREATEST((SELECT MAX(id) FROM ${table}), 1))`);
+    }
+    console.log(`  ${table}: ${rows.length} rows`);
+  }
+  src.close();
+}
 
 if (cmd === 'quote') {
   const [origin, destination, departDate, returnDate] = args;
@@ -18,17 +48,22 @@ if (cmd === 'quote') {
   console.log(JSON.stringify({ cheapest: r.cheapest, insight: { ...r.insight, history: r.insight?.history.length }, url: r.bookingUrl }, null, 2));
 } else if (cmd === 'scan') {
   const n = Number(args[0] ?? 10);
-  const db = openDb();
-  seedRoutes(db, config.origins);
+  const db = await openDb();
+  await seedRoutes(db, config.origins);
   const scanner = new Scanner(db, provider);
   scanner.on('deal', (e) => console.log(`  ★ ${e.kind} deal ${e.deal.slug} $${e.deal.price} (−${Math.round(e.deal.discount * 100)}%)`));
   for (let i = 0; i < n; i++) {
-    const job = scanner.nextJob();
+    const job = await scanner.nextJob();
     if (!job) break;
     const ev = await scanner.run(job);
     console.log(`${ev.origin}→${ev.destination} ${ev.departDate}/${ev.returnDate} ${ev.ok ? `$${ev.price} typ $${ev.typical}` : ev.error}`);
   }
-  db.close();
+  await db.close();
+} else if (cmd === 'import-sqlite') {
+  const db = await openDb();
+  console.log(`importing ${args[0] ?? 'data/whimsy.db'} → ${db.kind}`);
+  await importSqlite(args[0] ?? 'data/whimsy.db', db);
+  await db.close();
 } else {
-  console.log('usage: cli.ts scan [n] | quote ORIG DEST YYYY-MM-DD [YYYY-MM-DD]');
+  console.log('usage: cli.ts scan [n] | quote ORIG DEST YYYY-MM-DD [YYYY-MM-DD] | import-sqlite FILE');
 }

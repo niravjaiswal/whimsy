@@ -14,7 +14,7 @@ import {
 import { config } from './config.js';
 import { resizeWikimedia } from './images.js';
 import { matchesWhen, normalizeWhen, type WhenFilter } from './when.js';
-import { tx, type DB } from './db.js';
+import type { DB } from './db.js';
 import { TIER_RANK, type DealRow, type Tier } from './deals.js';
 import { buildMessage, sendEmail, sendNtfy, sendPush, sendWebhook, vapidKeys } from './notify/channels.js';
 import { manageUrl } from './notify/notifier.js';
@@ -41,14 +41,20 @@ interface PlaceMeta {
 }
 type Places = Map<string, PlaceMeta>;
 
-function placeMap(db: DB): Places {
-  const rows = db
-    .prepare(
-      `SELECT a.code, p.city, p.image AS g, c.url AS w, c.file
+// Places change rarely; cache them briefly so each request isn't a DB round trip.
+const placeCache = new WeakMap<DB, { at: number; map: Places }>();
+async function placeMap(db: DB): Promise<Places> {
+  const hit = placeCache.get(db);
+  if (hit && Date.now() - hit.at < 60_000) return hit.map;
+  const map = await loadPlaces(db);
+  placeCache.set(db, { at: Date.now(), map });
+  return map;
+}
+
+async function loadPlaces(db: DB): Promise<Places> {
+  const rows = (await db.all(`SELECT a.code, p.city, p.image AS g, c.url AS w, c.file
        FROM (SELECT code FROM places UNION SELECT code FROM city_images) a
-       LEFT JOIN places p ON p.code = a.code LEFT JOIN city_images c ON c.code = a.code`,
-    )
-    .all() as { code: string; city: string | null; g: string | null; w: string | null; file: string | null }[];
+       LEFT JOIN places p ON p.code = a.code LEFT JOIN city_images c ON c.code = a.code`)) as { code: string; city: string | null; g: string | null; w: string | null; file: string | null }[];
   return new Map(
     rows.map((r) => [
       r.code,
@@ -154,17 +160,18 @@ export function createApi({ db, scanner, bus }: AppDeps) {
     return c.json({ error: 'Something went wrong' }, 500);
   });
 
-  api.get('/meta', (c) => {
-    const places = placeMap(db);
+  api.get('/meta', async (c) => {
+    const places = await placeMap(db);
     return c.json({
       airports: AIRPORTS.map((a) => ({ ...a, image: places.get(a.code)?.thumb ?? null })),
       regions: Object.entries(REGION_LABELS).map(([id, label]) => ({ id, label })),
-      vapidPublicKey: vapidKeys(db).publicKey,
+      vapidPublicKey: (await vapidKeys(db)).publicKey,
+      emailEnabled: config.emailEnabled,
       tiers: ['good', 'great', 'incredible'],
     });
   });
 
-  api.get('/deals', (c) => {
+  api.get('/deals', async (c) => {
     const origins = list(c.req.query('origin')).map((s) => s.toUpperCase());
     const regions = list(c.req.query('region')) as Region[];
     const dests = list(c.req.query('destination')).map((s) => s.toUpperCase());
@@ -184,7 +191,7 @@ export function createApi({ db, scanner, bus }: AppDeps) {
     const tier = (c.req.query('tier') ?? 'good') as Tier;
     const sort = c.req.query('sort') ?? 'score';
     const limit = Math.min(200, Number(c.req.query('limit')) || 60);
-    const all = db.prepare("SELECT * FROM deals WHERE status = 'active'").all() as unknown as DealRow[];
+    const all = (await db.all("SELECT * FROM deals WHERE status = 'active'")) as unknown as DealRow[];
     const filtered = all.filter((d) => {
       if (origins.length && !origins.includes(d.origin)) return false;
       if (dests.length && !dests.includes(d.destination)) return false;
@@ -202,39 +209,29 @@ export function createApi({ db, scanner, bus }: AppDeps) {
       soon: (a, b) => a.depart_date.localeCompare(b.depart_date),
     };
     filtered.sort(sorters[sort] ?? sorters.score);
-    const places = placeMap(db);
+    const places = await placeMap(db);
     return c.json({ total: filtered.length, deals: filtered.slice(0, limit).map((d) => serializeDeal(d, places)) });
   });
 
-  api.get('/deals/:slug', (c) => {
-    const d = db.prepare('SELECT * FROM deals WHERE slug = ?').get(c.req.param('slug').toLowerCase()) as DealRow | undefined;
+  api.get('/deals/:slug', async (c) => {
+    const d = (await db.get('SELECT * FROM deals WHERE slug = ?', c.req.param('slug').toLowerCase())) as DealRow | undefined;
     if (!d) return c.json({ error: 'Deal not found' }, 404);
-    const places = placeMap(db);
-    const related = db
-      .prepare(
-        `SELECT * FROM deals WHERE status = 'active' AND id != ? AND (destination = ? OR origin = ?)
-         ORDER BY (destination = ?) DESC, score DESC LIMIT 8`,
-      )
-      .all(d.id, d.destination, d.origin, d.destination) as unknown as DealRow[];
-    const observations = db
-      .prepare('SELECT price, typical, depart_date, return_date, observed_at FROM observations WHERE route_id = ? ORDER BY observed_at DESC LIMIT 60')
-      .all(d.route_id);
+    const places = await placeMap(db);
+    const related = (await db.all(`SELECT * FROM deals WHERE status = 'active' AND id != ? AND (destination = ? OR origin = ?)
+         ORDER BY (destination = ?) DESC, score DESC LIMIT 8`, d.id, d.destination, d.origin, d.destination)) as unknown as DealRow[];
+    const observations = (await db.all('SELECT price, typical, depart_date, return_date, observed_at FROM observations WHERE route_id = ? ORDER BY observed_at DESC LIMIT 60', d.route_id));
     return c.json({ deal: serializeDeal(d, places), related: related.map((r) => serializeDeal(r, places)), observations });
   });
 
-  api.get('/stats', (c) => c.json(stats(db, scanner)));
+  api.get('/stats', async (c) => c.json(await stats(db, scanner)));
 
   // Fares currently under their typical price that aren't (yet) deals — "dipping".
-  api.get('/dips', (c) => {
-    const rows = db
-      .prepare(
-        `SELECT r.origin, r.destination, o.depart_date, o.return_date, o.price, o.typical, o.observed_at
+  api.get('/dips', async (c) => {
+    const rows = (await db.all(`SELECT r.origin, r.destination, o.depart_date, o.return_date, o.price, o.typical, o.observed_at
          FROM observations o JOIN routes r ON r.id = o.route_id
          WHERE o.observed_at > ? AND o.typical IS NOT NULL AND o.price < o.typical
            AND NOT EXISTS (SELECT 1 FROM deals d WHERE d.route_id = r.id AND d.status = 'active')
-         ORDER BY CAST(o.price AS REAL) / o.typical ASC LIMIT 60`,
-      )
-      .all(Date.now() - 48 * 3600_000) as {
+         ORDER BY CAST(o.price AS REAL) / o.typical ASC LIMIT 60`, Date.now() - 48 * 3600_000)) as {
       origin: string;
       destination: string;
       depart_date: string;
@@ -244,7 +241,7 @@ export function createApi({ db, scanner, bus }: AppDeps) {
       observed_at: number;
     }[];
     const seen = new Set<string>();
-    const places = placeMap(db);
+    const places = await placeMap(db);
     const dips = rows
       .filter((r) => (seen.has(r.origin + r.destination) ? false : (seen.add(r.origin + r.destination), true)))
       .slice(0, Number(c.req.query('limit')) || 12)
@@ -271,21 +268,21 @@ export function createApi({ db, scanner, bus }: AppDeps) {
     return c.json({ dips });
   });
 
-  api.get('/stream', (c) =>
+  api.get('/stream', async (c) =>
     streamSSE(c, async (stream) => {
       const onScan = (e: ScanEvent) => void stream.writeSSE({ event: 'scan', data: JSON.stringify(e) });
-      const onDeal = (e: DealEvent) =>
-        void stream.writeSSE({ event: 'deal', data: JSON.stringify({ kind: e.kind, deal: serializeDeal(e.deal, placeMap(db)) }) });
+      const onDeal = async (e: DealEvent) =>
+        void stream.writeSSE({ event: 'deal', data: JSON.stringify({ kind: e.kind, deal: serializeDeal(e.deal, await placeMap(db)) }) });
       bus.on('scan', onScan);
       bus.on('deal', onDeal);
       let open = true;
       stream.onAbort(() => {
         open = false;
       });
-      await stream.writeSSE({ event: 'hello', data: JSON.stringify(stats(db, scanner)) });
+      await stream.writeSSE({ event: 'hello', data: JSON.stringify(await stats(db, scanner)) });
       while (open) {
         await stream.sleep(20_000);
-        if (open) await stream.writeSSE({ event: 'stats', data: JSON.stringify(stats(db, scanner)) });
+        if (open) await stream.writeSSE({ event: 'stats', data: JSON.stringify(await stats(db, scanner)) });
       }
       bus.off('scan', onScan);
       bus.off('deal', onDeal);
@@ -297,9 +294,10 @@ export function createApi({ db, scanner, bus }: AppDeps) {
     const body = await c.req.json();
     const base = { channels: { push: true }, ...body };
     const a = normalizeAlertInput(base);
-    const deals = previewMatches(db, { ...a, id: 0, token: '', createdAt: 0, lastNotifiedAt: null }, 6);
-    const count = previewMatches(db, { ...a, id: 0, token: '', createdAt: 0, lastNotifiedAt: null }, 10_000).length;
-    const places = placeMap(db);
+    const all = await previewMatches(db, { ...a, id: 0, token: '', createdAt: 0, lastNotifiedAt: null }, 10_000);
+    const deals = all.slice(0, 6);
+    const count = all.length;
+    const places = await placeMap(db);
     return c.json({ count, deals: deals.map((d) => serializeDeal(d, places)) });
   });
 
@@ -307,13 +305,13 @@ export function createApi({ db, scanner, bus }: AppDeps) {
     if (!writeLimit(clientIp(c))) return c.json({ error: 'Too many requests — try again later' }, 429);
     const body = await c.req.json();
     // Alert + push subscription succeed or fail together.
-    const alert = tx(db, () => {
-      const a = createAlert(db, body);
-      if (body.pushSubscription) savePushSubscription(db, a.id, body.pushSubscription);
+    const alert = await db.tx(async (t) => {
+      const a = await createAlert(t, body);
+      if (body.pushSubscription) await savePushSubscription(t, a.id, body.pushSubscription);
       return a;
     });
-    if (alert.email) {
-      const welcome = { ...buildMessage(previewMatches(db, alert, 6), manageUrl(alert)), title: 'Your Whimsy alert is live' };
+    if (alert.email && config.emailEnabled) {
+      const welcome = { ...buildMessage(await previewMatches(db, alert, 6), manageUrl(alert)), title: 'Your Whimsy alert is live' };
       await sendEmail(db, alert.email, welcome).catch((e) =>
         console.warn('[alerts] welcome email failed', e.message),
       );
@@ -321,49 +319,47 @@ export function createApi({ db, scanner, bus }: AppDeps) {
     return c.json({ alert: publicAlert(alert) }, 201);
   });
 
-  api.get('/alerts/:token', (c) => {
-    const alert = getAlertByToken(db, c.req.param('token'));
+  api.get('/alerts/:token', async (c) => {
+    const alert = await getAlertByToken(db, c.req.param('token'));
     if (!alert) return c.json({ error: 'Alert not found' }, 404);
-    const places = placeMap(db);
-    const deliveries = db
-      .prepare('SELECT channel, deal_count, ok, error, created_at FROM deliveries WHERE alert_id = ? ORDER BY created_at DESC LIMIT 20')
-      .all(alert.id);
-    const pushCount = (db.prepare('SELECT COUNT(*) AS n FROM push_subscriptions WHERE alert_id = ?').get(alert.id) as { n: number }).n;
+    const places = await placeMap(db);
+    const deliveries = (await db.all('SELECT channel, deal_count, ok, error, created_at FROM deliveries WHERE alert_id = ? ORDER BY created_at DESC LIMIT 20', alert.id));
+    const pushCount = ((await db.get('SELECT COUNT(*) AS n FROM push_subscriptions WHERE alert_id = ?', alert.id)) as { n: number }).n;
     return c.json({
       alert: publicAlert(alert),
-      matches: previewMatches(db, alert, 12).map((d) => serializeDeal(d, places)),
+      matches: (await previewMatches(db, alert, 12)).map((d) => serializeDeal(d, places)),
       deliveries,
       pushDevices: pushCount,
     });
   });
 
   api.patch('/alerts/:token', async (c) => {
-    const alert = updateAlert(db, c.req.param('token'), await c.req.json());
+    const alert = await updateAlert(db, c.req.param('token'), await c.req.json());
     if (!alert) return c.json({ error: 'Alert not found' }, 404);
     return c.json({ alert: publicAlert(alert) });
   });
 
-  api.delete('/alerts/:token', (c) => {
-    if (!deleteAlert(db, c.req.param('token'))) return c.json({ error: 'Alert not found' }, 404);
+  api.delete('/alerts/:token', async (c) => {
+    if (!(await deleteAlert(db, c.req.param('token')))) return c.json({ error: 'Alert not found' }, 404);
     return c.json({ ok: true });
   });
 
   api.post('/alerts/:token/push', async (c) => {
-    const alert = getAlertByToken(db, c.req.param('token'));
+    const alert = await getAlertByToken(db, c.req.param('token'));
     if (!alert) return c.json({ error: 'Alert not found' }, 404);
     const { subscription } = await c.req.json();
-    savePushSubscription(db, alert.id, subscription);
-    if (!alert.channels.push) updateAlert(db, alert.token, { channels: { ...alert.channels, push: true } });
+    await savePushSubscription(db, alert.id, subscription);
+    if (!alert.channels.push) await updateAlert(db, alert.token, { channels: { ...alert.channels, push: true } });
     return c.json({ ok: true });
   });
 
   api.post('/alerts/:token/test', async (c) => {
-    const alert = getAlertByToken(db, c.req.param('token'));
+    const alert = await getAlertByToken(db, c.req.param('token'));
     if (!alert) return c.json({ error: 'Alert not found' }, 404);
     if (!testLimit(alert.token)) return c.json({ error: 'Slow down — too many test sends' }, 429);
     const sample =
-      previewMatches(db, alert, 1)[0] ??
-      (db.prepare("SELECT * FROM deals WHERE status = 'active' ORDER BY score DESC LIMIT 1").get() as DealRow | undefined);
+      (await previewMatches(db, alert, 1))[0] ??
+      ((await db.get("SELECT * FROM deals WHERE status = 'active' ORDER BY score DESC LIMIT 1")) as DealRow | undefined);
     if (!sample) return c.json({ error: 'No live deals yet to send as a sample — give the scanner a few minutes' }, 409);
     const msg = buildMessage([sample], manageUrl(alert));
     msg.title = `[Test] ${msg.title}`;
@@ -387,8 +383,8 @@ export function createApi({ db, scanner, bus }: AppDeps) {
     if (!writeLimit(clientIp(c))) return c.json({ error: 'Too many requests — try again later' }, 429);
     const { email } = await c.req.json();
     const e = String(email ?? '').trim().toLowerCase();
-    const rows = db.prepare('SELECT token, name FROM alerts WHERE email = ?').all(e) as { token: string; name: string | null }[];
-    if (rows.length) {
+    const rows = (await db.all('SELECT token, name FROM alerts WHERE email = ?', e)) as { token: string; name: string | null }[];
+    if (rows.length && config.emailEnabled) {
       const links = rows.map((r) => `${r.name ?? 'Alert'}: ${manageUrl(r)}`).join('\n');
       await sendEmail(db, e, {
         title: 'Your Whimsy alerts',
@@ -404,11 +400,11 @@ export function createApi({ db, scanner, bus }: AppDeps) {
 
   // Dev-only: view emails that would have been sent (no SMTP configured).
   if (!config.smtpUrl && process.env.NODE_ENV !== 'production') {
-    api.get('/dev/outbox', (c) =>
-      c.json(db.prepare('SELECT id, recipient, subject, text, created_at FROM outbox ORDER BY id DESC LIMIT 50').all()),
+    api.get('/dev/outbox', async (c) =>
+      c.json((await db.all('SELECT id, recipient, subject, text, created_at FROM outbox ORDER BY id DESC LIMIT 50'))),
     );
-    api.get('/dev/outbox/:id', (c) => {
-      const row = db.prepare('SELECT html FROM outbox WHERE id = ?').get(Number(c.req.param('id'))) as { html: string } | undefined;
+    api.get('/dev/outbox/:id', async (c) => {
+      const row = (await db.get('SELECT html FROM outbox WHERE id = ?', Number(c.req.param('id')))) as { html: string } | undefined;
       return row ? c.html(row.html) : c.notFound();
     });
   }
@@ -416,50 +412,63 @@ export function createApi({ db, scanner, bus }: AppDeps) {
   return api;
 }
 
-function savePushSubscription(db: DB, alertId: number, sub: unknown) {
+async function savePushSubscription(db: DB, alertId: number, sub: unknown) {
   const s = sub as { endpoint?: string; keys?: { p256dh?: string; auth?: string } };
   if (!s?.endpoint || !/^https:\/\//.test(s.endpoint) || !s.keys?.p256dh || !s.keys?.auth)
     throw new ValidationError('Invalid push subscription');
-  db.prepare(
-    `INSERT INTO push_subscriptions (alert_id, endpoint, subscription, created_at) VALUES (?, ?, ?, ?)
-     ON CONFLICT(alert_id, endpoint) DO UPDATE SET subscription = excluded.subscription`,
-  ).run(alertId, s.endpoint, JSON.stringify({ endpoint: s.endpoint, keys: s.keys }), Date.now());
+  (await db.run(`INSERT INTO push_subscriptions (alert_id, endpoint, subscription, created_at) VALUES (?, ?, ?, ?)
+     ON CONFLICT(alert_id, endpoint) DO UPDATE SET subscription = excluded.subscription`, alertId, s.endpoint, JSON.stringify({ endpoint: s.endpoint, keys: s.keys }), Date.now()));
 }
 
-export function stats(db: DB, scanner?: Scanner) {
+const statsCache = new WeakMap<DB, { at: number; value: Awaited<ReturnType<typeof computeStats>> }>();
+
+/** Scanner + catalog stats. Cached briefly: every open tab polls this over SSE. */
+export async function stats(db: DB, scanner?: Scanner) {
+  const hit = statsCache.get(db);
+  if (hit && Date.now() - hit.at < 5000) return { ...hit.value, scanner: scanner?.status() ?? { running: false } };
+  const value = await computeStats(db, scanner);
+  statsCache.set(db, { at: Date.now(), value });
+  return value;
+}
+
+async function computeStats(db: DB, scanner?: Scanner) {
   const now = Date.now();
-  const one = <T>(sql: string, ...args: (number | string)[]) => db.prepare(sql).get(...args) as T;
-  const routes = one<{ n: number }>('SELECT COUNT(*) AS n FROM routes WHERE enabled = 1').n;
-  const covered = one<{ n: number }>('SELECT COUNT(*) AS n FROM routes WHERE enabled = 1 AND last_scan_at > ?', now - 86400_000).n;
-  const hour = one<{ n: number; ok: number }>(
-    'SELECT COUNT(*) AS n, COALESCE(SUM(ok), 0) AS ok FROM scans WHERE created_at > ?',
+  const c = (await db.get(
+    `SELECT
+       (SELECT COUNT(*) FROM routes WHERE enabled = 1) AS routes,
+       (SELECT COUNT(*) FROM routes WHERE enabled = 1 AND last_scan_at > ?) AS covered,
+       (SELECT COALESCE(SUM(scan_count), 0) FROM routes) AS total_scans,
+       (SELECT COUNT(*) FROM scans WHERE created_at > ?) AS hour_n,
+       (SELECT COALESCE(SUM(ok), 0) FROM scans WHERE created_at > ?) AS hour_ok,
+       (SELECT COUNT(*) FROM scans WHERE created_at > ?) AS day_n,
+       (SELECT COUNT(*) FROM deals WHERE status = 'active') AS active_deals,
+       (SELECT COUNT(*) FROM deals WHERE found_at > ?) AS deals_today,
+       (SELECT COUNT(*) FROM alerts) AS alerts,
+       (SELECT MAX(discount) FROM deals WHERE status = 'active') AS best`,
+    now - 86400_000,
     now - 3600_000,
+    now - 3600_000,
+    now - 86400_000,
+    now - 86400_000,
+  )) as Record<string, number | null>;
+  const recent = await db.all(
+    `SELECT s.depart_date, s.return_date, s.ok, s.price, s.error, s.duration_ms, s.created_at, r.origin, r.destination, r.last_typical
+     FROM scans s JOIN routes r ON r.id = s.route_id ORDER BY s.id DESC LIMIT 25`,
   );
-  const day = one<{ n: number }>('SELECT COUNT(*) AS n FROM scans WHERE created_at > ?', now - 86400_000).n;
-  const totalScans = one<{ n: number }>('SELECT COALESCE(SUM(scan_count), 0) AS n FROM routes').n;
-  const activeDeals = one<{ n: number }>("SELECT COUNT(*) AS n FROM deals WHERE status = 'active'").n;
-  const dealsToday = one<{ n: number }>('SELECT COUNT(*) AS n FROM deals WHERE found_at > ?', now - 86400_000).n;
-  const alerts = one<{ n: number }>('SELECT COUNT(*) AS n FROM alerts').n;
-  const best = one<{ d: number | null }>("SELECT MAX(discount) AS d FROM deals WHERE status = 'active'").d;
-  const recent = db
-    .prepare(
-      `SELECT s.depart_date, s.return_date, s.ok, s.price, s.error, s.duration_ms, s.created_at, r.origin, r.destination, r.last_typical
-       FROM scans s JOIN routes r ON r.id = s.route_id ORDER BY s.id DESC LIMIT 25`,
-    )
-    .all();
+  const hourN = Number(c.hour_n ?? 0);
   return {
     now,
     scanner: scanner?.status() ?? { running: false },
-    routes,
-    covered24h: covered,
-    scansLastHour: hour.n,
-    successRateLastHour: hour.n ? hour.ok / hour.n : null,
-    scans24h: day,
-    totalScans,
-    activeDeals,
-    dealsToday,
-    alerts,
-    bestDiscount: best,
+    routes: Number(c.routes),
+    covered24h: Number(c.covered),
+    scansLastHour: hourN,
+    successRateLastHour: hourN ? Number(c.hour_ok) / hourN : null,
+    scans24h: Number(c.day_n),
+    totalScans: Number(c.total_scans),
+    activeDeals: Number(c.active_deals),
+    dealsToday: Number(c.deals_today),
+    alerts: Number(c.alerts),
+    bestDiscount: c.best,
     recent,
   };
 }

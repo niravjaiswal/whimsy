@@ -6,7 +6,7 @@ import { memDb } from './helpers.js';
 const img = (file: string, width = 1280, height = 720) => ({ url: `https://upload.wikimedia.org/x/1280px-${file}`, file, width, height });
 
 describe('city images', () => {
-  it('rejects flags, maps, portraits and small images', () => {
+  it('rejects flags, maps, portraits and small images', async () => {
     expect(acceptable(img('Skyline.jpg'))).toBe(true);
     expect(acceptable(img('Flag_of_Aruba.svg'))).toBe(false);
     expect(acceptable(img('Maui_Landsat_Photo.jpg'))).toBe(false);
@@ -15,7 +15,7 @@ describe('city images', () => {
     expect(acceptable(img('Tiny.jpg', 498, 300))).toBe(false);
   });
 
-  it('resizes Wikimedia thumbnail URLs, keeping query strings', () => {
+  it('resizes Wikimedia thumbnail URLs, keeping query strings', async () => {
     const u = 'https://thumb.wikimedia.org/wikipedia/commons/thumb/b/be/A.jpg/1280px-A.jpg?utm_source=x';
     expect(resizeWikimedia(u, 960)).toBe('https://thumb.wikimedia.org/wikipedia/commons/thumb/b/be/A.jpg/960px-A.jpg?utm_source=x');
   });
@@ -31,7 +31,7 @@ describe('city images', () => {
   });
 
   it('caches results (including misses) and skips fresh entries', async () => {
-    const db = memDb();
+    const db = await memDb();
     const airports = [getAirport('LIS')!, getAirport('ATL')!];
     const orig = globalThis.fetch;
     let calls = 0;
@@ -53,7 +53,7 @@ describe('city images', () => {
       expect(await syncCityImages(db, { airports, delayMs: 0, log: () => {} })).toEqual({ checked: 0, found: 0 });
       // One batched request covers both cities.
       expect(calls).toBe(1);
-      const rows = db.prepare('SELECT code, url FROM city_images ORDER BY code').all() as any[];
+      const rows = (await db.all('SELECT code, url FROM city_images ORDER BY code')) as any[];
       expect(rows).toEqual([
         { code: 'ATL', url: null },
         { code: 'LIS', url: 'https://upload.wikimedia.org/a/1280px-Lisboa.jpg' },

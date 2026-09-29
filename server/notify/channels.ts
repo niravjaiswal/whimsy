@@ -3,7 +3,7 @@ import net from 'node:net';
 import nodemailer, { type Transporter } from 'nodemailer';
 import webpush from 'web-push';
 import { config } from '../config.js';
-import { kvGet, kvSet, type DB } from '../db.js';
+import { kvGet, type DB } from '../db.js';
 import type { DealRow } from '../deals.js';
 import { TIER_LABEL, cityOf, dateRange, dealHeadline, dealLine, money, pct } from '../format.js';
 
@@ -94,25 +94,25 @@ export async function sendEmail(db: DB, to: string, msg: Message & { manageUrl: 
   const t = getTransport();
   if (!t) {
     // No SMTP configured: keep it in the outbox so it's visible at /api/dev/outbox.
-    db.prepare('INSERT INTO outbox (recipient, subject, html, text, created_at) VALUES (?, ?, ?, ?, ?)').run(to, subject, html, text, Date.now());
+    (await db.run('INSERT INTO outbox (recipient, subject, html, text, created_at) VALUES (?, ?, ?, ?, ?)', to, subject, html, text, Date.now()));
     return;
   }
   await t.sendMail({ from: config.emailFrom, to, subject, html, text });
 }
 
 // ── web push ───────────────────────────────────────────────────────────────
-export function vapidKeys(db: DB): { publicKey: string; privateKey: string } {
+export async function vapidKeys(db: DB): Promise<{ publicKey: string; privateKey: string }> {
   if (config.vapidPublicKey && config.vapidPrivateKey) return { publicKey: config.vapidPublicKey, privateKey: config.vapidPrivateKey };
-  const stored = kvGet(db, 'vapid');
+  const stored = await kvGet(db, 'vapid');
   if (stored) return JSON.parse(stored);
-  const keys = webpush.generateVAPIDKeys();
-  kvSet(db, 'vapid', JSON.stringify(keys));
-  return keys;
+  // First boot: generate once. ON CONFLICT keeps whichever process won the race.
+  await db.run('INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT (key) DO NOTHING', 'vapid', JSON.stringify(webpush.generateVAPIDKeys()));
+  return JSON.parse((await kvGet(db, 'vapid'))!);
 }
 
 export async function sendPush(db: DB, alertId: number, msg: Message): Promise<{ sent: number; failed: number }> {
-  const keys = vapidKeys(db);
-  const subs = db.prepare('SELECT id, subscription FROM push_subscriptions WHERE alert_id = ?').all(alertId) as {
+  const keys = await vapidKeys(db);
+  const subs = (await db.all('SELECT id, subscription FROM push_subscriptions WHERE alert_id = ?', alertId)) as {
     id: number;
     subscription: string;
   }[];
@@ -132,7 +132,7 @@ export async function sendPush(db: DB, alertId: number, msg: Message): Promise<{
       const code = (err as { statusCode?: number }).statusCode;
       lastError = code ? `HTTP ${code}` : (err as Error).message;
       // Subscription is gone (user revoked / browser uninstalled): forget it.
-      if (code === 404 || code === 410) db.prepare('DELETE FROM push_subscriptions WHERE id = ?').run(s.id);
+      if (code === 404 || code === 410) (await db.run('DELETE FROM push_subscriptions WHERE id = ?', s.id));
     }
   }
   if (!subs.length) throw new Error('no push subscriptions registered');

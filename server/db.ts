@@ -1,219 +1,166 @@
-import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
+import postgres from 'postgres';
 
-export type DB = DatabaseSync;
+/*
+ * Database access. Production runs on Postgres (Supabase) through postgres.js;
+ * local dev and tests run the same SQL on PGlite (Postgres compiled to WASM,
+ * in-process), so no database server is needed to hack on Whimsy.
+ *
+ * Queries use `?` placeholders; they're rewritten to $1..$n here.
+ */
 
-const SCHEMA = `
-PRAGMA journal_mode = WAL;
-PRAGMA foreign_keys = ON;
-PRAGMA busy_timeout = 5000;
+export interface RunResult {
+  changes: number;
+  rows: any[];
+}
 
-CREATE TABLE IF NOT EXISTS kv (
-  key TEXT PRIMARY KEY,
-  value TEXT NOT NULL
-);
+export interface DB {
+  all<T = any>(sql: string, ...params: unknown[]): Promise<T[]>;
+  get<T = any>(sql: string, ...params: unknown[]): Promise<T | undefined>;
+  run(sql: string, ...params: unknown[]): Promise<RunResult>;
+  /** Multi-statement SQL without parameters (migrations). */
+  exec(sql: string): Promise<void>;
+  tx<T>(fn: (db: DB) => Promise<T>): Promise<T>;
+  close(): Promise<void>;
+  readonly kind: 'postgres' | 'pglite';
+}
 
--- One row per directed route we scan.
-CREATE TABLE IF NOT EXISTS routes (
-  id INTEGER PRIMARY KEY,
-  origin TEXT NOT NULL,
-  destination TEXT NOT NULL,
-  distance INTEGER NOT NULL,
-  priority REAL NOT NULL DEFAULT 1,
-  next_scan_at INTEGER NOT NULL DEFAULT 0,
-  last_scan_at INTEGER,
-  scan_count INTEGER NOT NULL DEFAULT 0,
-  sample_cursor INTEGER NOT NULL DEFAULT 0,
-  fail_count INTEGER NOT NULL DEFAULT 0,
-  last_price INTEGER,
-  last_typical INTEGER,
-  enabled INTEGER NOT NULL DEFAULT 1,
-  UNIQUE (origin, destination)
-);
-CREATE INDEX IF NOT EXISTS routes_due ON routes (enabled, next_scan_at);
+/** Rewrite `?` placeholders (outside quoted strings) to $1..$n. */
+export function toPg(sql: string): string {
+  let n = 0;
+  let out = '';
+  let quote: string | null = null;
+  for (const ch of sql) {
+    if (quote) {
+      if (ch === quote) quote = null;
+      out += ch;
+    } else if (ch === "'" || ch === '"') {
+      quote = ch;
+      out += ch;
+    } else if (ch === '?') out += `$${++n}`;
+    else out += ch;
+  }
+  return out;
+}
 
--- Every price we observe (one per scan).
-CREATE TABLE IF NOT EXISTS observations (
-  id INTEGER PRIMARY KEY,
-  route_id INTEGER NOT NULL REFERENCES routes(id) ON DELETE CASCADE,
-  depart_date TEXT NOT NULL,
-  return_date TEXT,
-  price INTEGER NOT NULL,
-  typical INTEGER,
-  typical_low INTEGER,
-  typical_high INTEGER,
-  level INTEGER,
-  observed_at INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS obs_route ON observations (route_id, observed_at);
+const clean = (params: unknown[]) => params.map((p) => (p === undefined ? null : p));
 
--- Log of scanner requests, for the status page.
-CREATE TABLE IF NOT EXISTS scans (
-  id INTEGER PRIMARY KEY,
-  route_id INTEGER NOT NULL,
-  depart_date TEXT NOT NULL,
-  return_date TEXT,
-  ok INTEGER NOT NULL,
-  price INTEGER,
-  error TEXT,
-  duration_ms INTEGER NOT NULL,
-  created_at INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS scans_time ON scans (created_at);
+type Querier = (text: string, params: unknown[]) => Promise<RunResult>;
 
-CREATE TABLE IF NOT EXISTS places (
-  code TEXT PRIMARY KEY,
-  city TEXT,
-  country TEXT,
-  image TEXT,
-  updated_at INTEGER NOT NULL
-);
+function makeDb(kind: DB['kind'], q: Querier, execRaw: (sql: string) => Promise<void>, txRaw: <T>(fn: (q: Querier) => Promise<T>) => Promise<T>, close: () => Promise<void>): DB {
+  const wrap = (query: Querier, inTx: boolean): DB => ({
+    kind,
+    all: async (sql, ...p) => (await query(toPg(sql), clean(p))).rows,
+    get: async (sql, ...p) => (await query(toPg(sql), clean(p))).rows[0],
+    run: (sql, ...p) => query(toPg(sql), clean(p)),
+    exec: execRaw,
+    // Nested tx() calls just join the outer transaction.
+    tx: (fn) => (inTx ? fn(wrap(query, true)) : txRaw((tq) => fn(wrap(tq, true)))),
+    close,
+  });
+  return wrap(q, false);
+}
 
--- High-res destination photos (Wikipedia lead images). url NULL = no usable photo.
-CREATE TABLE IF NOT EXISTS city_images (
-  code TEXT PRIMARY KEY,
-  url TEXT,
-  file TEXT,
-  title TEXT,
-  fetched_at INTEGER NOT NULL
-);
+// ── Postgres (production) ─────────────────────────────────────────────────
+function openPostgres(url: string): DB {
+  const local = /@(localhost|127\.0\.0\.1)[:/]/.test(url);
+  const sql = postgres(url, {
+    max: Number(process.env.DATABASE_POOL_SIZE ?? 8),
+    prepare: false, // safe behind Supabase's pooler in any mode
+    ssl: local ? false : 'require',
+    onnotice: () => {},
+    // int8 (epoch-ms timestamps, ids, COUNT(*)) as JS numbers — all well within 2^53.
+    types: {
+      bigint: { to: 20, from: [20], serialize: (x: number) => String(x), parse: (x: string) => Number(x) },
+    },
+  });
+  const query =
+    (s: postgres.Sql | postgres.TransactionSql): Querier =>
+    async (text, params) => {
+      const res = await s.unsafe(text, params as postgres.ParameterOrJSON<never>[]);
+      return { changes: res.count ?? 0, rows: [...res] };
+    };
+  return makeDb(
+    'postgres',
+    query(sql),
+    async (text) => {
+      await sql.unsafe(text);
+    },
+    (fn) => sql.begin((tx) => fn(query(tx))) as Promise<never>,
+    () => sql.end({ timeout: 5 }),
+  );
+}
 
-CREATE TABLE IF NOT EXISTS deals (
-  id INTEGER PRIMARY KEY,
-  slug TEXT NOT NULL UNIQUE,
-  route_id INTEGER NOT NULL REFERENCES routes(id) ON DELETE CASCADE,
-  origin TEXT NOT NULL,
-  destination TEXT NOT NULL,
-  depart_date TEXT NOT NULL,
-  return_date TEXT,
-  price INTEGER NOT NULL,
-  first_price INTEGER NOT NULL,
-  baseline INTEGER NOT NULL,
-  typical_low INTEGER,
-  typical_high INTEGER,
-  discount REAL NOT NULL,
-  tier TEXT NOT NULL,
-  score REAL NOT NULL,
-  airline TEXT,
-  airline_code TEXT,
-  stops INTEGER,
-  duration_minutes INTEGER,
-  depart_time TEXT,
-  arrive_time TEXT,
-  via TEXT,
-  history TEXT,
-  booking_url TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'active',
-  found_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL,
-  verified_at INTEGER NOT NULL,
-  expired_at INTEGER
-);
-CREATE INDEX IF NOT EXISTS deals_active ON deals (status, score DESC);
-CREATE INDEX IF NOT EXISTS deals_route ON deals (route_id, depart_date, return_date);
-
-CREATE TABLE IF NOT EXISTS alerts (
-  id INTEGER PRIMARY KEY,
-  token TEXT NOT NULL UNIQUE,
-  name TEXT,
-  email TEXT,
-  origins TEXT NOT NULL,        -- JSON string[]; empty = anywhere
-  regions TEXT NOT NULL,        -- JSON string[]; empty = anywhere
-  destinations TEXT NOT NULL,   -- JSON string[]; empty = anywhere
-  max_price INTEGER,
-  min_tier TEXT NOT NULL DEFAULT 'good',
-  months TEXT NOT NULL,         -- JSON "YYYY-MM"[]; empty = any
-  channels TEXT NOT NULL,       -- JSON {email?:bool, push?:bool, ntfy?:string, webhook?:string}
-  frequency TEXT NOT NULL DEFAULT 'instant', -- 'instant' | 'daily'
-  paused INTEGER NOT NULL DEFAULT 0,
-  created_at INTEGER NOT NULL,
-  last_notified_at INTEGER
-);
-
-CREATE TABLE IF NOT EXISTS push_subscriptions (
-  id INTEGER PRIMARY KEY,
-  alert_id INTEGER NOT NULL REFERENCES alerts(id) ON DELETE CASCADE,
-  endpoint TEXT NOT NULL,
-  subscription TEXT NOT NULL,
-  created_at INTEGER NOT NULL,
-  UNIQUE (alert_id, endpoint)
-);
-
--- Deals matched to an alert; the notifier flushes unsent matches in batches.
-CREATE TABLE IF NOT EXISTS alert_matches (
-  id INTEGER PRIMARY KEY,
-  alert_id INTEGER NOT NULL REFERENCES alerts(id) ON DELETE CASCADE,
-  deal_id INTEGER NOT NULL REFERENCES deals(id) ON DELETE CASCADE,
-  price INTEGER NOT NULL,
-  created_at INTEGER NOT NULL,
-  sent_at INTEGER
-);
-CREATE INDEX IF NOT EXISTS matches_pending ON alert_matches (sent_at, alert_id);
-CREATE INDEX IF NOT EXISTS matches_alert_deal ON alert_matches (alert_id, deal_id);
-
--- One row per channel send attempt.
-CREATE TABLE IF NOT EXISTS deliveries (
-  id INTEGER PRIMARY KEY,
-  alert_id INTEGER NOT NULL REFERENCES alerts(id) ON DELETE CASCADE,
-  channel TEXT NOT NULL,
-  deal_count INTEGER NOT NULL,
-  ok INTEGER NOT NULL,
-  error TEXT,
-  created_at INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS deliveries_alert ON deliveries (alert_id, created_at);
-
--- Emails we would have sent when SMTP isn't configured (dev visibility).
-CREATE TABLE IF NOT EXISTS outbox (
-  id INTEGER PRIMARY KEY,
-  recipient TEXT NOT NULL,
-  subject TEXT NOT NULL,
-  html TEXT NOT NULL,
-  text TEXT NOT NULL,
-  created_at INTEGER NOT NULL
-);
-`;
-
-export function openDb(file = process.env.DATABASE_PATH ?? path.resolve('data/whimsy.db')): DB {
-  if (file !== ':memory:') fs.mkdirSync(path.dirname(file), { recursive: true });
-  const db = new DatabaseSync(file);
-  db.exec(SCHEMA);
-  migrate(db);
+// ── PGlite (dev / tests) ──────────────────────────────────────────────────
+async function openPglite(dataDir?: string): Promise<DB> {
+  const { PGlite } = await import('@electric-sql/pglite');
+  if (dataDir) fs.mkdirSync(dataDir, { recursive: true });
+  const pg = new PGlite(dataDir, { parsers: { 20: (v: string) => Number(v) } });
+  await pg.waitReady;
+  type Q = { query: typeof pg.query };
+  const query =
+    (s: Q): Querier =>
+    async (text, params) => {
+      const res = await s.query(text, params);
+      return { changes: res.affectedRows ?? 0, rows: res.rows as any[] };
+    };
+  const db = makeDb(
+    'pglite',
+    query(pg),
+    async (text) => {
+      await pg.exec(text);
+    },
+    (fn) => pg.transaction((tx) => fn(query(tx as unknown as Q))),
+    () => pg.close(),
+  );
+  await migrate(db);
   return db;
 }
 
-export function kvGet(db: DB, key: string): string | undefined {
-  const row = db.prepare('SELECT value FROM kv WHERE key = ?').get(key) as { value: string } | undefined;
-  return row?.value;
-}
+export const MIGRATIONS_DIR = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../supabase/migrations');
 
-export function kvSet(db: DB, key: string, value: string): void {
-  db.prepare('INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(key, value);
-}
-
-export function tx<T>(db: DB, fn: () => T): T {
-  db.exec('BEGIN');
-  try {
-    const out = fn();
-    db.exec('COMMIT');
-    return out;
-  } catch (err) {
-    db.exec('ROLLBACK');
-    throw err;
+/**
+ * Apply supabase/migrations/*.sql in order (PGlite only — on Supabase the
+ * migrations are applied with `supabase db push`). Role grants are skipped:
+ * PGlite has no anon/authenticated roles.
+ */
+export async function migrate(db: DB, dir = findMigrationsDir()) {
+  await db.exec('CREATE TABLE IF NOT EXISTS _migrations (name TEXT PRIMARY KEY)');
+  const done = new Set((await db.all<{ name: string }>('SELECT name FROM _migrations')).map((r) => r.name));
+  for (const file of fs.readdirSync(dir).filter((f) => f.endsWith('.sql')).sort()) {
+    if (done.has(file)) continue;
+    const sqlText = fs
+      .readFileSync(path.join(dir, file), 'utf8')
+      .split('\n')
+      .filter((l) => !/^\s*(REVOKE|GRANT)\b/i.test(l))
+      .join('\n');
+    await db.exec(sqlText);
+    await db.run('INSERT INTO _migrations (name) VALUES (?)', file);
   }
 }
 
-/** Additive column migrations for databases created by older versions. */
-function migrate(db: DB) {
-  const cols = (table: string) =>
-    new Set((db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map((c) => c.name));
-  const alerts = cols('alerts');
-  const add: [string, string][] = [
-    ['depart_from', 'TEXT'],
-    ['depart_to', 'TEXT'],
-    ['min_nights', 'INTEGER'],
-    ['max_nights', 'INTEGER'],
-  ];
-  for (const [name, type] of add) if (!alerts.has(name)) db.exec(`ALTER TABLE alerts ADD COLUMN ${name} ${type}`);
+function findMigrationsDir(): string {
+  // Works from source (server/) and from the compiled build (dist-server/server/).
+  for (const c of [path.resolve('supabase/migrations'), MIGRATIONS_DIR, path.resolve(MIGRATIONS_DIR, '../../supabase/migrations')]) {
+    if (fs.existsSync(c)) return c;
+  }
+  throw new Error('supabase/migrations not found');
+}
+
+/**
+ * DATABASE_URL=postgres://… → Postgres. Otherwise PGlite, persisted under
+ * data/pglite (or in memory with ':memory:').
+ */
+export async function openDb(target = process.env.DATABASE_URL ?? process.env.PGLITE_DIR ?? path.resolve('data/pglite')): Promise<DB> {
+  if (/^postgres(ql)?:\/\//.test(target)) return openPostgres(target);
+  return openPglite(target === ':memory:' ? undefined : target);
+}
+
+export async function kvGet(db: DB, key: string): Promise<string | undefined> {
+  return (await db.get<{ value: string }>('SELECT value FROM kv WHERE key = ?', key))?.value;
+}
+
+export async function kvSet(db: DB, key: string, value: string): Promise<void> {
+  await db.run('INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value', key, value);
 }

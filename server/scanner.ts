@@ -3,7 +3,7 @@ import type { DB } from './db.js';
 import { recordResult, sweepStaleDeals, type DealEvent, type DealRow } from './deals.js';
 import { sampleDates, tripLengths, type RouteRow } from './routes.js';
 import { rowToAlert } from './alerts.js';
-import { AIRPORT_BY_CODE, type Region } from './airports.js';
+import { AIRPORTS } from './airports.js';
 import { ProviderError, type FareProvider, type FareQuery } from './providers/types.js';
 
 export interface ScannerOptions {
@@ -94,33 +94,39 @@ export class Scanner extends EventEmitter<{ scan: [ScanEvent]; deal: [DealEvent]
   }
 
   /** Average time for the scanner to visit every enabled route once. */
-  cycleMs(): number {
-    const { n } = this.db.prepare('SELECT COUNT(*) AS n FROM routes WHERE enabled = 1').get() as { n: number };
+  async cycleMs(): Promise<number> {
+    const { n } = (await this.db.get('SELECT COUNT(*) AS n FROM routes WHERE enabled = 1')) as { n: number };
     return Math.max(15 * 60_000, (n / this.opts.rpm) * 60_000);
   }
+
+  private picking = false;
 
   private async tick() {
     this.lastTickAt = Date.now();
     if (Date.now() < this.pausedUntil) return;
     if (this.inFlight.size >= this.opts.concurrency) return;
-    const job = this.nextJob();
+    // Selecting a job awaits the database; don't let overlapping ticks pick the same route.
+    if (this.picking) return;
+    this.picking = true;
+    let job: Job | null;
+    try {
+      job = await this.nextJob();
+    } finally {
+      this.picking = false;
+    }
     if (!job) return;
     await this.run(job);
   }
 
   /** Verification of active deals first, then neighbour-date probes, then the most overdue route. */
-  nextJob(now = Date.now()): Job | null {
+  async nextJob(now = Date.now()): Promise<Job | null> {
     const busy = [...this.inFlight];
     const notBusy = busy.length ? `AND r.id NOT IN (${busy.join(',')})` : '';
-    const stale = this.db
-      .prepare(
-        `SELECT d.* FROM deals d JOIN routes r ON r.id = d.route_id
+    const stale = (await this.db.get(`SELECT d.* FROM deals d JOIN routes r ON r.id = d.route_id
          WHERE d.status = 'active' AND d.verified_at < ? ${notBusy}
-         ORDER BY d.score DESC LIMIT 1`,
-      )
-      .get(now - this.opts.reverifyMs) as DealRow | undefined;
+         ORDER BY d.score DESC LIMIT 1`, now - this.opts.reverifyMs)) as DealRow | undefined;
     if (stale) {
-      const route = this.db.prepare('SELECT * FROM routes WHERE id = ?').get(stale.route_id) as unknown as RouteRow;
+      const route = (await this.db.get('SELECT * FROM routes WHERE id = ?', stale.route_id)) as unknown as RouteRow;
       return {
         route,
         kind: 'verify',
@@ -136,12 +142,10 @@ export class Scanner extends EventEmitter<{ scan: [ScanEvent]; deal: [DealEvent]
     if (probeIdx >= 0) return this.probes.splice(probeIdx, 1)[0];
     this.jobCount++;
     if (this.opts.targetEvery > 0 && this.jobCount % this.opts.targetEvery === 0) {
-      const targeted = this.targetedJob(now);
+      const targeted = await this.targetedJob(now);
       if (targeted) return targeted;
     }
-    const route = this.db
-      .prepare(`SELECT * FROM routes r WHERE enabled = 1 AND next_scan_at <= ? ${notBusy} ORDER BY next_scan_at LIMIT 1`)
-      .get(now) as RouteRow | undefined;
+    const route = (await this.db.get(`SELECT * FROM routes r WHERE enabled = 1 AND next_scan_at <= ? ${notBusy} ORDER BY next_scan_at LIMIT 1`, now)) as RouteRow | undefined;
     if (!route) return null;
     return { route, kind: 'sample', query: sampleDates(route, route.sample_cursor) };
   }
@@ -150,17 +154,15 @@ export class Scanner extends EventEmitter<{ scan: [ScanEvent]; deal: [DealEvent]
     const { route, query } = job;
     this.inFlight.add(route.id);
     // Claim the route immediately so parallel ticks don't pick it again.
-    this.db.prepare('UPDATE routes SET next_scan_at = ? WHERE id = ?').run(Date.now() + 10 * 60_000, route.id);
+    (await this.db.run('UPDATE routes SET next_scan_at = ? WHERE id = ?', Date.now() + 10 * 60_000, route.id));
     const started = Date.now();
     let ev: ScanEvent;
     try {
       const result = await this.provider.search(query);
-      const dealEvent = recordResult(this.db, route, result);
+      const dealEvent = await recordResult(this.db, route, result);
       this.consecutiveFailures = 0;
-      const hasDeal = !!this.db
-        .prepare("SELECT 1 FROM deals WHERE route_id = ? AND status = 'active' LIMIT 1")
-        .get(route.id);
-      this.reschedule(route, job.kind, true, hasDeal);
+      const hasDeal = !!(await this.db.get("SELECT 1 FROM deals WHERE route_id = ? AND status = 'active' LIMIT 1", route.id));
+      await this.reschedule(route, job.kind, true, hasDeal);
       ev = {
         routeId: route.id,
         origin: query.origin,
@@ -175,7 +177,7 @@ export class Scanner extends EventEmitter<{ scan: [ScanEvent]; deal: [DealEvent]
         kind: job.kind,
       };
       if (dealEvent) this.emit('deal', dealEvent);
-      if (dealEvent?.kind === 'new' && job.kind !== 'probe') this.enqueueProbes(route, query);
+      if (dealEvent?.kind === 'new' && job.kind !== 'probe') await this.enqueueProbes(route, query);
     } catch (err) {
       const retryable = err instanceof ProviderError ? err.retryable : true;
       if (retryable) {
@@ -187,11 +189,9 @@ export class Scanner extends EventEmitter<{ scan: [ScanEvent]; deal: [DealEvent]
       }
       if (job.kind === 'verify') {
         // Couldn't re-verify: bump verified_at a little so we don't spin on it.
-        this.db
-          .prepare("UPDATE deals SET verified_at = verified_at + 1800000 WHERE route_id = ? AND status = 'active' AND depart_date = ?")
-          .run(route.id, query.departDate);
+        (await this.db.run("UPDATE deals SET verified_at = verified_at + 1800000 WHERE route_id = ? AND status = 'active' AND depart_date = ?", route.id, query.departDate));
       }
-      this.reschedule(route, job.kind, false, false);
+      await this.reschedule(route, job.kind, false, false);
       ev = {
         routeId: route.id,
         origin: query.origin,
@@ -209,21 +209,17 @@ export class Scanner extends EventEmitter<{ scan: [ScanEvent]; deal: [DealEvent]
     } finally {
       this.inFlight.delete(route.id);
     }
-    this.db
-      .prepare(
-        'INSERT INTO scans (route_id, depart_date, return_date, ok, price, error, duration_ms, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-      )
-      .run(route.id, query.departDate, query.returnDate ?? null, ev.ok ? 1 : 0, ev.price, ev.error ?? null, ev.durationMs, ev.at);
+    (await this.db.run('INSERT INTO scans (route_id, depart_date, return_date, ok, price, error, duration_ms, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', route.id, query.departDate, query.returnDate ?? null, ev.ok ? 1 : 0, ev.price, ev.error ?? null, ev.durationMs, ev.at));
     this.emit('scan', ev);
     return ev;
   }
 
-  private enqueueProbes(route: RouteRow, q: FareQuery) {
+  private async enqueueProbes(route: RouteRow, q: FareQuery) {
     const tomorrow = new Date(Date.now() + 2 * 86400_000).toISOString().slice(0, 10);
     for (const off of PROBE_OFFSETS) {
       const departDate = shiftDate(q.departDate, off);
       if (departDate <= tomorrow || this.probes.length >= MAX_PROBES) continue;
-      const exists = this.db.prepare('SELECT 1 FROM deals WHERE route_id = ? AND depart_date = ?').get(route.id, departDate);
+      const exists = (await this.db.get('SELECT 1 FROM deals WHERE route_id = ? AND depart_date = ?', route.id, departDate));
       if (exists) continue;
       this.probes.push({
         route,
@@ -238,23 +234,27 @@ export class Scanner extends EventEmitter<{ scan: [ScanEvent]; deal: [DealEvent]
    * (e.g. Thanksgiving week) could go unchecked for days. Spend a slice of the
    * budget on random routes matching an alert, departing inside its window.
    */
-  targetedJob(now = Date.now(), rand = Math.random): Job | null {
+  async targetedJob(now = Date.now(), rand = Math.random): Promise<Job | null> {
     const earliest = new Date(now + 2 * 86400_000).toISOString().slice(0, 10);
-    const alerts = (this.db
-      .prepare('SELECT * FROM alerts WHERE paused = 0 AND depart_from IS NOT NULL AND depart_to >= ?')
-      .all(earliest) as any[]).map(rowToAlert);
+    const alerts = ((await this.db.all('SELECT * FROM alerts WHERE paused = 0 AND depart_from IS NOT NULL AND depart_to >= ?', earliest)) as any[]).map(rowToAlert);
     if (!alerts.length) return null;
     const alert = alerts[Math.floor(rand() * alerts.length)];
-    const routes = (this.db.prepare('SELECT * FROM routes WHERE enabled = 1').all() as unknown as RouteRow[]).filter(
-      (r) =>
-        !this.inFlight.has(r.id) &&
-        (!alert.origins.length || alert.origins.includes(r.origin)) &&
-        (!(alert.destinations.length || alert.regions.length) ||
-          alert.destinations.includes(r.destination) ||
-          alert.regions.includes(AIRPORT_BY_CODE.get(r.destination)?.region as Region)),
-    );
-    if (!routes.length) return null;
-    const route = routes[Math.floor(rand() * routes.length)];
+    // Destination filter: explicit cities plus every airport in the chosen regions.
+    const dests = [...alert.destinations, ...AIRPORTS.filter((a) => alert.regions.includes(a.region)).map((a) => a.code)];
+    const anyDest = !alert.destinations.length && !alert.regions.length;
+    const route = (await this.db.get(
+      `SELECT * FROM routes WHERE enabled = 1
+         AND (cardinality(?::text[]) = 0 OR origin = ANY(?::text[]))
+         AND (? OR destination = ANY(?::text[]))
+         AND NOT (id = ANY(?::bigint[]))
+       ORDER BY random() LIMIT 1`,
+      alert.origins,
+      alert.origins,
+      anyDest,
+      dests,
+      [...this.inFlight],
+    )) as RouteRow | undefined;
+    if (!route) return null;
     const from = alert.departFrom! < earliest ? earliest : alert.departFrom!;
     const span = Math.round((Date.parse(alert.departTo!) - Date.parse(from)) / 86400_000);
     const departDate = shiftDate(from, Math.floor(rand() * (span + 1)));
@@ -273,7 +273,7 @@ export class Scanner extends EventEmitter<{ scan: [ScanEvent]; deal: [DealEvent]
     return this.probes.length;
   }
 
-  private reschedule(route: RouteRow, kind: Job['kind'], ok: boolean, hasDeal: boolean) {
+  private async reschedule(route: RouteRow, kind: Job['kind'], ok: boolean, hasDeal: boolean) {
     const now = Date.now();
     const jitter = 0.85 + Math.random() * 0.3;
     let next: number;
@@ -282,26 +282,22 @@ export class Scanner extends EventEmitter<{ scan: [ScanEvent]; deal: [DealEvent]
       next = now + Math.min(12 * 3600_000, 5 * 60_000 * 2 ** Math.min(fails, 8));
     } else {
       // Routes with a live deal get watched twice as often.
-      next = now + this.cycleMs() * (hasDeal ? 0.5 : 1) * jitter;
+      next = Math.round(now + (await this.cycleMs()) * (hasDeal ? 0.5 : 1) * jitter);
     }
     if (kind !== 'sample' && ok) {
       // Verifies and probes don't consume the route's sample slot; keep its schedule.
-      this.db.prepare('UPDATE routes SET next_scan_at = MIN(next_scan_at, ?) WHERE id = ?').run(Math.max(route.next_scan_at, now), route.id);
+      (await this.db.run('UPDATE routes SET next_scan_at = LEAST(next_scan_at, ?) WHERE id = ?', Math.max(route.next_scan_at, now), route.id));
       return;
     }
-    this.db
-      .prepare(
-        `UPDATE routes SET next_scan_at = ?, last_scan_at = ?, scan_count = scan_count + ?,
-           sample_cursor = sample_cursor + ?, fail_count = ? WHERE id = ?`,
-      )
-      .run(next, now, ok ? 1 : 0, ok && kind === 'sample' ? 1 : 0, ok ? 0 : route.fail_count + 1, route.id);
+    (await this.db.run(`UPDATE routes SET next_scan_at = ?, last_scan_at = ?, scan_count = scan_count + ?,
+           sample_cursor = sample_cursor + ?, fail_count = ? WHERE id = ?`, next, now, ok ? 1 : 0, ok && kind === 'sample' ? 1 : 0, ok ? 0 : route.fail_count + 1, route.id));
   }
 
   /** Housekeeping: expire stale deals, trim old logs. */
-  maintain(now = Date.now()) {
-    const expired = sweepStaleDeals(this.db, now);
-    this.db.prepare('DELETE FROM scans WHERE created_at < ?').run(now - 7 * 86400_000);
-    this.db.prepare('DELETE FROM observations WHERE observed_at < ?').run(now - 120 * 86400_000);
+  async maintain(now = Date.now()) {
+    const expired = await sweepStaleDeals(this.db, now);
+    (await this.db.run('DELETE FROM scans WHERE created_at < ?', now - 7 * 86400_000));
+    (await this.db.run('DELETE FROM observations WHERE observed_at < ?', now - 120 * 86400_000));
     return { expired };
   }
 }
