@@ -148,7 +148,14 @@ export interface Meta {
   airports: Airport[];
   regions: { id: Region; label: string }[];
   vapidPublicKey: string;
+  emailEnabled: boolean;
 }
+
+/**
+ * Where the API lives. Empty = same origin (dev proxy, or the backend serving the
+ * SPA). The Vercel build sets VITE_API_URL to the Railway backend.
+ */
+export const API_BASE = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
 
 export class ApiError extends Error {
   constructor(
@@ -160,7 +167,7 @@ export class ApiError extends Error {
 }
 
 export async function api<T>(path: string, init?: RequestInit & { json?: unknown }): Promise<T> {
-  const res = await fetch(`/api${path}`, {
+  const res = await fetch(`${API_BASE}/api${path}`, {
     ...init,
     headers: { ...(init?.json !== undefined ? { 'content-type': 'application/json' } : {}), ...init?.headers },
     body: init?.json !== undefined ? JSON.stringify(init.json) : init?.body,
@@ -222,7 +229,7 @@ export function useLiveStream(handlers: StreamHandlers) {
   ref.current = handlers;
   const [connected, setConnected] = useState(false);
   useEffect(() => {
-    const es = new EventSource('/api/stream');
+    const es = new EventSource(`${API_BASE}/api/stream`);
     es.onopen = () => setConnected(true);
     es.onerror = () => setConnected(false);
     es.addEventListener('scan', (e) => ref.current.scan?.(JSON.parse((e as MessageEvent).data)));

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { api, rememberedAlerts, type Alert } from '../api';
+import { api, rememberedAlerts, useMeta, type Alert } from '../api';
 import { REGION_EMOJI, money } from '../format';
 import { isAnyWhen, whenSummary } from '../components/WhenPicker';
 
@@ -12,6 +12,7 @@ function describe(a: Alert) {
 }
 
 export function MyAlerts() {
+  const meta = useMeta();
   const [alerts, setAlerts] = useState<Alert[] | null>(null);
   const [email, setEmail] = useState('');
   const [sent, setSent] = useState(false);
@@ -66,6 +67,7 @@ export function MyAlerts() {
         )}
       </div>
 
+      {meta?.emailEnabled && (
       <div className="panel" style={{ marginTop: 16 }}>
         <div style={{ fontSize: 15 }}>Lost a manage link?</div>
         <p className="muted" style={{ fontSize: 14, margin: '4px 0 12px' }}>
@@ -92,6 +94,7 @@ export function MyAlerts() {
         )}
         {err && <p className="error-msg">{err}</p>}
       </div>
+      )}
     </div>
   );
 }

@@ -272,6 +272,7 @@ export function AlertForm({
             </div>
           </div>
 
+          {meta.emailEnabled && (
           <div className={`channel ${d.channels.email ? 'on' : ''}`}>
             <div className="ic">✉️</div>
             <div className="body">
@@ -283,6 +284,7 @@ export function AlertForm({
               <input className="input" type="email" placeholder="you@example.com" value={d.email} onChange={(e) => (up({ email: e.target.value }), e.target.value && !d.channels.email && ch({ email: true }))} />
             </div>
           </div>
+          )}
 
           <div className={`channel ${d.channels.ntfy ? 'on' : ''}`}>
             <div className="ic">📱</div>
