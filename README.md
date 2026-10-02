@@ -38,19 +38,22 @@ WASM, stored in `data/pglite`), so there's nothing else to install. Set
 | API + scanner + notifier | **Railway** — https://<your-api-host> | One long-running container (`Dockerfile`, `railway.json`, health check `/api/health`) |
 | Database | **Supabase** Postgres (project `<project-ref>`) | Schema in `supabase/migrations`; RLS on, Data API locked out |
 
-Deploying changes:
+Deploying changes: **push to `main`** on GitHub. Railway rebuilds
+the API and Vercel rebuilds the frontend automatically. Database migrations are the one
+manual step:
 
 ```bash
-supabase db push                 # new migrations (after `supabase link`)
-railway up --service api         # backend
-vercel deploy --prod             # frontend
+supabase db push                 # apply new supabase/migrations (after `supabase link`)
 ```
+
+`railway up --service api` and `vercel deploy --prod` still work for deploying a local tree.
 
 Railway variables: `DATABASE_URL` (Supabase session pooler, port 5432),
 `PUBLIC_URL`, `CORS_ORIGINS`, `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` /
-`VAPID_SUBJECT`, `SCAN_RPM`, `SCAN_CONCURRENCY`, `DATABASE_POOL_SIZE`. Add
-`SMTP_URL` (e.g. `smtps://resend:<key>@smtp.resend.com:465`) plus `EMAIL_FROM`
-to turn on email alerts — without it the email channel is hidden in production.
+`VAPID_SUBJECT`, `SCAN_RPM`, `SCAN_CONCURRENCY`, `DATABASE_POOL_SIZE`,
+`AGENTMAIL_API_KEY` / `AGENTMAIL_INBOX`. Email goes out through AgentMail from
+`whimsy@agentmail.to` (SMTP via `SMTP_URL` is the fallback). Addresses must be
+confirmed through a one-click link before any deal email is sent.
 Run exactly one Railway replica: the scanner and notifier are in-process.
 
 `npx tsx server/cli.ts import-sqlite data/whimsy.db` copies a v1 SQLite database
