@@ -123,10 +123,9 @@ export function AccountProvider({ children }: { children: ReactNode }) {
         await client?.signOut({ scope: 'local' });
         setMe(null);
       },
+      // Deletes server-side data and the auth user; the caller signs out after navigating away.
       deleteAccount: async () => {
         await api('/me', { method: 'DELETE' });
-        await client?.signOut({ scope: 'local' });
-        setMe(null);
       },
       isSaved: (slug) => !!me?.saved.some((d) => d.slug === slug),
       toggleSaved: async (slug) => {

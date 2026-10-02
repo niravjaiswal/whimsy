@@ -40,7 +40,14 @@ export function Account() {
             </div>
             <h1 style={{ fontWeight: 400, letterSpacing: '-0.03em', fontSize: 'clamp(24px, 6vw, 36px)', margin: '4px 0 0', overflowWrap: 'anywhere' }}>{me.user.email}</h1>
           </div>
-          <button className="pill" onClick={() => account.signOut().then(() => navigate('/'))}>
+          <button
+            className="pill"
+            onClick={() => {
+              // Leave first, so this page's "must be signed in" redirect doesn't win the race.
+              navigate('/', { replace: true });
+              void account.signOut();
+            }}
+          >
             Sign out
           </button>
         </div>
@@ -153,7 +160,8 @@ export function Account() {
               if (!confirm(`Delete ${me.user.email} and all ${me.alerts.length} alert(s)? This cannot be undone.`)) return;
               try {
                 await account.deleteAccount();
-                navigate('/');
+                navigate('/', { replace: true });
+                void account.signOut();
               } catch (e) {
                 setErr((e as Error).message);
               }
