@@ -12,35 +12,56 @@ export interface Message {
   title: string;
   body: string;
   url: string;
+  /** One representative (cheapest) deal per route. */
   deals: DealRow[];
+  /** Other qualifying dates on the same route, keyed by the representative's id. */
+  moreDates?: Record<number, DealRow[]>;
 }
+
+/** Group deals by route: cheapest fare represents the route, the rest are "more dates". */
+export function groupByRoute(deals: DealRow[]): { reps: DealRow[]; moreDates: Record<number, DealRow[]> } {
+  const groups = new Map<string, DealRow[]>();
+  for (const d of deals) {
+    const k = `${d.origin}-${d.destination}`;
+    groups.set(k, [...(groups.get(k) ?? []), d]);
+  }
+  const reps: DealRow[] = [];
+  const moreDates: Record<number, DealRow[]> = {};
+  for (const g of groups.values()) {
+    const sorted = [...g].sort((a, b) => a.price - b.price || b.score - a.score);
+    reps.push(sorted[0]);
+    if (sorted.length > 1) moreDates[sorted[0].id] = sorted.slice(1);
+  }
+  return { reps, moreDates };
+}
+
+const moreLine = (msg: Pick<Message, 'moreDates'>, d: DealRow) => {
+  const more = msg.moreDates?.[d.id];
+  return more?.length ? `+${more.length} more date${more.length > 1 ? 's' : ''} from ${money(Math.min(...more.map((m) => m.price)))}` : '';
+};
 
 const dealUrl = (d: DealRow) => `${config.publicUrl}/deal/${d.slug}`;
 
 export function buildMessage(deals: DealRow[], manageUrl: string): Message & { manageUrl: string } {
-  const top = [...deals].sort((a, b) => b.score - a.score);
+  const { reps, moreDates } = groupByRoute(deals);
+  const top = reps.sort((a, b) => b.score - a.score);
   if (top.length === 0) {
-    return { title: 'Whimsy', body: '', url: `${config.publicUrl}/`, deals: top, manageUrl };
+    return { title: 'Whimsy', body: '', url: `${config.publicUrl}/`, deals: top, moreDates, manageUrl };
   }
+  const base = { deals: top, moreDates, manageUrl };
   if (top.length === 1) {
     const d = top[0];
-    return {
-      title: `✈ ${dealHeadline(d)}`,
-      body: dealLine(d),
-      url: dealUrl(d),
-      deals: top,
-      manageUrl,
-    };
+    const more = moreLine(base, d);
+    return { ...base, title: `✈ ${dealHeadline(d)}`, body: more ? `${dealLine(d)} · ${more}` : dealLine(d), url: dealUrl(d) };
   }
   return {
+    ...base,
     title: `✈ ${top.length} new flight deals — from ${money(Math.min(...top.map((d) => d.price)))}`,
     body: top
       .slice(0, 5)
       .map((d) => `${cityOf(d.origin)} → ${cityOf(d.destination)} ${money(d.price)} (−${pct(d.discount)})`)
       .join('\n'),
     url: `${config.publicUrl}/`,
-    deals: top,
-    manageUrl,
   };
 }
 
@@ -63,6 +84,7 @@ export function renderEmail(msg: Message & { manageUrl: string }): { html: strin
         <div style="font-size:18px;font-weight:600;color:#0b0d17;margin:4px 0">${esc(cityOf(d.origin))} → ${esc(cityOf(d.destination))}
           <span style="float:right">${money(d.price)}</span></div>
         <div style="font-size:14px;color:#555">${esc(dateRange(d.depart_date, d.return_date))} · usually ${money(d.baseline)} · ${esc(d.airline ?? 'Various')}</div>
+        ${moreLine(msg, d) ? `<div style="font-size:13px;color:#888;margin-top:2px">${esc(moreLine(msg, d))}</div>` : ''}
         <div style="margin-top:8px"><a href="${esc(dealUrl(d))}" style="color:#3154d3">See deal</a> &nbsp;·&nbsp;
           <a href="${esc(d.booking_url)}" style="color:#3154d3">Book on Google Flights</a></div>
       </td></tr>`,
@@ -84,7 +106,7 @@ export function renderEmail(msg: Message & { manageUrl: string }): { html: strin
   </table></td></tr></table></body></html>`;
   const text = `${msg.title}\n\n${msg.deals
     .slice(0, 12)
-    .map((d) => `${dealHeadline(d)}\n${dealLine(d)}\n${dealUrl(d)}\n`)
+    .map((d) => `${dealHeadline(d)}\n${dealLine(d)}${moreLine(msg, d) ? ` · ${moreLine(msg, d)}` : ''}\n${dealUrl(d)}\n`)
     .join('\n')}\nManage this alert: ${msg.manageUrl}`;
   return { html, text };
 }
@@ -282,6 +304,7 @@ export function webhookBody(url: string, msg: Message): unknown {
     stops: d.stops,
     url: dealUrl(d),
     book: d.booking_url,
+    otherDates: (msg.moreDates?.[d.id] ?? []).map((m) => ({ depart: m.depart_date, return: m.return_date, price: m.price, url: dealUrl(m) })),
   }));
   const host = new URL(url).hostname;
   if (host.endsWith('discord.com') || host.endsWith('discordapp.com')) {
@@ -290,7 +313,7 @@ export function webhookBody(url: string, msg: Message): unknown {
       content: msg.title,
       embeds: msg.deals.slice(0, 10).map((d) => ({
         title: dealHeadline(d),
-        description: dealLine(d),
+        description: [dealLine(d), moreLine(msg, d)].filter(Boolean).join(' · '),
         url: dealUrl(d),
         color: d.tier === 'incredible' ? 0xf6b877 : d.tier === 'great' ? 0x416af4 : 0x8b7398,
       })),
@@ -303,7 +326,7 @@ export function webhookBody(url: string, msg: Message): unknown {
         { type: 'header', text: { type: 'plain_text', text: msg.title.slice(0, 150) } },
         ...msg.deals.slice(0, 10).map((d) => ({
           type: 'section',
-          text: { type: 'mrkdwn', text: `*<${dealUrl(d)}|${dealHeadline(d)}>*\n${dealLine(d)}` },
+          text: { type: 'mrkdwn', text: `*<${dealUrl(d)}|${dealHeadline(d)}>*\n${[dealLine(d), moreLine(msg, d)].filter(Boolean).join(' · ')}` },
         })),
       ],
     };

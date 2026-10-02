@@ -221,8 +221,23 @@ export function createApi({ db, scanner, bus }: AppDeps) {
       soon: (a, b) => a.depart_date.localeCompare(b.depart_date),
     };
     filtered.sort(sorters[sort] ?? sorters.score);
+    // One card per route: the first deal in sort order represents it; the route's
+    // other qualifying dates ride along as `otherDates` (cheapest first).
+    const byRoute = new Map<string, DealRow[]>();
+    for (const d of filtered) {
+      const k = `${d.origin}-${d.destination}`;
+      byRoute.set(k, [...(byRoute.get(k) ?? []), d]);
+    }
     const places = await placeMap(db);
-    return c.json({ total: filtered.length, deals: filtered.slice(0, limit).map((d) => serializeDeal(d, places)) });
+    const cards = [...byRoute.values()].slice(0, limit).map(([rep, ...rest]) => ({
+      ...serializeDeal(rep, places),
+      otherDates: rest
+        .sort((a, b) => a.price - b.price)
+        .slice(0, 8)
+        .map((o) => ({ slug: o.slug, departDate: o.depart_date, returnDate: o.return_date, price: o.price, discount: o.discount })),
+      otherCount: rest.length,
+    }));
+    return c.json({ total: byRoute.size, dealCount: filtered.length, deals: cards });
   });
 
   api.get('/deals/:slug', async (c) => {
@@ -230,9 +245,26 @@ export function createApi({ db, scanner, bus }: AppDeps) {
     if (!d) return c.json({ error: 'Deal not found' }, 404);
     const places = await placeMap(db);
     const related = (await db.all(`SELECT * FROM deals WHERE status = 'active' AND id != ? AND (destination = ? OR origin = ?)
-         ORDER BY (destination = ?) DESC, score DESC LIMIT 8`, d.id, d.destination, d.origin, d.destination)) as unknown as DealRow[];
+         ORDER BY (destination = ?) DESC, score DESC LIMIT 20`, d.id, d.destination, d.origin, d.destination)) as unknown as DealRow[];
     const observations = (await db.all('SELECT price, typical, depart_date, return_date, observed_at FROM observations WHERE route_id = ? ORDER BY observed_at DESC LIMIT 60', d.route_id));
-    return c.json({ deal: serializeDeal(d, places), related: related.map((r) => serializeDeal(r, places)), observations });
+    const sameRoute = (await db.all(
+      `SELECT slug, depart_date, return_date, price, discount FROM deals
+       WHERE status = 'active' AND id != ? AND origin = ? AND destination = ? ORDER BY price LIMIT 12`,
+      d.id,
+      d.origin,
+      d.destination,
+    )) as { slug: string; depart_date: string; return_date: string | null; price: number; discount: number }[];
+    return c.json({
+      deal: serializeDeal(d, places),
+      // Other routes nearby (same city pair excluded — those are listed as sameRoute).
+      related: related
+        .filter((r, i, all) => all.findIndex((x) => x.origin === r.origin && x.destination === r.destination) === i) // best per route
+        .filter((r) => !(r.origin === d.origin && r.destination === d.destination))
+        .slice(0, 8)
+        .map((r) => serializeDeal(r, places)),
+      sameRoute: sameRoute.map((o) => ({ slug: o.slug, departDate: o.depart_date, returnDate: o.return_date, price: o.price, discount: o.discount })),
+      observations,
+    });
   });
 
   api.get('/stats', async (c) => c.json(await stats(db, scanner)));

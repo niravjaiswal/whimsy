@@ -41,6 +41,21 @@ describe('api', () => {
     expect(cheapFirst.deals[0].price).toBe(400);
   });
 
+  it('groups a route\'s dates into one card and lists them on the deal page', async () => {
+    const { db, json } = await setup();
+    const route = await addRoute(db);
+    await recordResult(db, route, fare({ price: 400 }));
+    await recordResult(db, route, fare({ price: 380, departDate: '2026-11-13', returnDate: '2026-11-20' }));
+    await recordResult(db, route, fare({ price: 420, departDate: '2026-11-17', returnDate: '2026-11-24' }));
+    const feed = await (await json('/deals?sort=price')).json();
+    expect(feed).toMatchObject({ total: 1, dealCount: 3 });
+    expect(feed.deals[0]).toMatchObject({ price: 380, otherCount: 2 });
+    expect(feed.deals[0].otherDates.map((o: any) => o.price)).toEqual([400, 420]);
+    const detail = await (await json('/deals/dtw-lis-2026-11-13-2026-11-20')).json();
+    expect(detail.sameRoute.map((o: any) => o.price)).toEqual([400, 420]);
+    expect(detail.related).toHaveLength(0);
+  });
+
   it('returns deal detail with related deals', async () => {
     const { db, json } = await setup();
     await recordResult(db, await addRoute(db), fare({ price: 400 }));

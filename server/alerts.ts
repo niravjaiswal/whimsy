@@ -231,8 +231,8 @@ export function matchesAlert(
 }
 
 /**
- * Queue this deal for every alert it matches. We only re-queue a deal an alert
- * already heard about if the price fell another 10%+.
+ * Queue this deal for every alert it matches. We only re-queue a deal (or another
+ * date on a route sent in the last 24h) if the price fell another 10%+.
  */
 export async function enqueueMatches(db: DB, deal: DealRow, now = Date.now()): Promise<number> {
   const rows = (await db.all('SELECT * FROM alerts WHERE paused = 0')) as unknown as AlertRowDb[];
@@ -240,8 +240,22 @@ export async function enqueueMatches(db: DB, deal: DealRow, now = Date.now()): P
   for (const r of rows) {
     const alert = rowToAlert(r);
     if (!matchesAlert(alert, deal)) continue;
-    const prev = (await db.get('SELECT MIN(price) AS p FROM alert_matches WHERE alert_id = ? AND deal_id = ?', alert.id, deal.id)) as { p: number | null };
-    if (prev.p != null && deal.price > prev.p * 0.9) continue;
+    // Already told this alert about this route (any dates) in the last day? Only
+    // speak up again if the new fare is 10%+ cheaper than what we sent. Same for
+    // the exact deal, with no time limit.
+    const prev = (await db.get(
+      `SELECT MIN(m.price) FILTER (WHERE m.deal_id = ?) AS same_deal,
+              MIN(m.price) FILTER (WHERE m.created_at > ?) AS same_route
+       FROM alert_matches m JOIN deals d ON d.id = m.deal_id
+       WHERE m.alert_id = ? AND d.origin = ? AND d.destination = ?`,
+      deal.id,
+      now - 24 * 3600_000,
+      alert.id,
+      deal.origin,
+      deal.destination,
+    )) as { same_deal: number | null; same_route: number | null };
+    const floor = Math.min(prev.same_deal ?? Infinity, prev.same_route ?? Infinity);
+    if (Number.isFinite(floor) && deal.price > floor * 0.9) continue;
     (await db.run('INSERT INTO alert_matches (alert_id, deal_id, price, created_at) VALUES (?, ?, ?, ?)', alert.id, deal.id, deal.price, now));
     queued++;
   }

@@ -76,6 +76,21 @@ describe('enqueueMatches', () => {
     const d3 = (await recordResult(db, route, fare({ price: 390 })))!.deal;
     expect(await enqueueMatches(db, d3)).toBe(1);
   });
+  it('does not re-notify a route within 24h unless 10%+ cheaper', async () => {
+    const db = await memDb();
+    const route = await addRoute(db);
+    await createAlert(db, { channels: { push: true } });
+    const now = Date.now();
+    const first = (await recordResult(db, route, fare({ price: 450 })))!.deal;
+    expect(await enqueueMatches(db, first, now)).toBe(1);
+    const otherDate = (await recordResult(db, route, fare({ price: 430, departDate: '2026-11-20', returnDate: '2026-11-27' })))!.deal;
+    expect(await enqueueMatches(db, otherDate, now + 60_000)).toBe(0); // same route, only 4% cheaper
+    const muchCheaper = (await recordResult(db, route, fare({ price: 390, departDate: '2026-12-01', returnDate: '2026-12-08' })))!.deal;
+    expect(await enqueueMatches(db, muchCheaper, now + 120_000)).toBe(1);
+    const nextDay = (await recordResult(db, route, fare({ price: 440, departDate: '2026-12-05', returnDate: '2026-12-12' })))!.deal;
+    expect(await enqueueMatches(db, nextDay, now + 25 * 3600_000)).toBe(1); // window passed
+  });
+
   it('update keeps token and applies changes', async () => {
     const db = await memDb();
     const a = await createAlert(db, { channels: { push: true } });

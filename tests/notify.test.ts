@@ -34,6 +34,17 @@ describe('channels', () => {
     expect((webhookBody('https://hooks.slack.com/services/x', msg) as any).blocks.length).toBe(2);
     expect((webhookBody('https://example.com/hook', msg) as any).deals[0]).toMatchObject({ route: 'DTW-LIS', price: 400 });
   });
+  it('collapses several dates on one route into a single line', async () => {
+    const db = await memDb();
+    const route = await addRoute(db);
+    const a = (await recordResult(db, route, fare({ price: 400 })))!.deal;
+    const b = (await recordResult(db, route, fare({ price: 350, departDate: '2026-11-13', returnDate: '2026-11-20' })))!.deal;
+    const msg = buildMessage([a, b], 'https://x/alerts/t');
+    expect(msg.deals.map((d) => d.price)).toEqual([350]);
+    expect(msg.body).toContain('+1 more date from $400');
+    expect((webhookBody('https://example.com/hook', msg) as any).deals[0].otherDates[0].price).toBe(400);
+  });
+
   it('renders email with deal and manage link, escaping HTML', async () => {
     const db = await memDb();
     const deal = (await recordResult(db, await addRoute(db), fare({ price: 400 })))!.deal;
