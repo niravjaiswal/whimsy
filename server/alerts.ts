@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { AIRPORT_BY_CODE, REGION_LABELS, type Region } from './airports.js';
+import type { AuthUser } from './auth.js';
 import { config } from './config.js';
 import type { DB } from './db.js';
 import { TIER_RANK, TIERS, type DealRow, type Tier } from './deals.js';
@@ -151,17 +152,19 @@ export function normalizeAlertInput(input: AlertInput): Omit<Alert, 'id' | 'toke
   return { name, email, origins, regions, destinations, maxPrice, minTier, ...when, channels, frequency, paused: !!input.paused };
 }
 
-export async function createAlert(db: DB, input: AlertInput, now = Date.now()): Promise<Alert> {
+/** `owner`: the signed-in user creating it. Their own (proven) email needs no confirmation. */
+export async function createAlert(db: DB, input: AlertInput, now = Date.now(), owner?: AuthUser): Promise<Alert> {
   const a = normalizeAlertInput(input);
   const token = crypto.randomBytes(18).toString('base64url');
   const res = (await db.run(`INSERT INTO alerts (token, name, email, origins, regions, destinations, max_price, min_tier, months, depart_from, depart_to,
          min_nights, max_nights, channels, frequency, paused, created_at, email_token)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`, token, a.name, a.email, JSON.stringify(a.origins), JSON.stringify(a.regions), JSON.stringify(a.destinations), a.maxPrice, a.minTier,
       JSON.stringify(a.months), a.departFrom, a.departTo, a.minNights, a.maxNights, JSON.stringify(a.channels), a.frequency, a.paused ? 1 : 0, now, a.email ? newEmailToken() : null));
+  if (owner) return (await adoptForOwner(db, token, owner, now))!;
   return rowToAlert(res.rows[0] as AlertRowDb);
 }
 
-export async function updateAlert(db: DB, token: string, input: AlertInput): Promise<Alert | null> {
+export async function updateAlert(db: DB, token: string, input: AlertInput, owner?: AuthUser): Promise<Alert | null> {
   const current = await getAlertByToken(db, token);
   if (!current) return null;
   const a = normalizeAlertInput({ ...current, ...input });
@@ -177,10 +180,25 @@ export async function updateAlert(db: DB, token: string, input: AlertInput): Pro
     // A new address has to be confirmed again.
     await db.run('UPDATE alerts SET email_verified_at = NULL, email_token = ? WHERE token = ?', a.email ? newEmailToken() : null, token);
   }
+  if (owner && a.email === owner.email) await db.run('UPDATE alerts SET email_verified_at = COALESCE(email_verified_at, ?) WHERE token = ?', Date.now(), token);
   return await getAlertByToken(db, token);
 }
 
 const newEmailToken = () => crypto.randomBytes(24).toString('base64url');
+
+/** Attach an alert to a signed-in user; confirm its email if it's the account's. */
+async function adoptForOwner(db: DB, token: string, owner: AuthUser, now: number): Promise<Alert | null> {
+  const res = await db.run(
+    `UPDATE alerts SET user_id = ?,
+       email_verified_at = CASE WHEN email = ? THEN COALESCE(email_verified_at, ?) ELSE email_verified_at END
+     WHERE token = ? RETURNING *`,
+    owner.id,
+    owner.email,
+    now,
+    token,
+  );
+  return res.rows[0] ? rowToAlert(res.rows[0] as AlertRowDb) : null;
+}
 
 /** The secret in the confirmation link for this alert's email, if one is pending. */
 export async function emailTokenFor(db: DB, alertId: number): Promise<string | null> {

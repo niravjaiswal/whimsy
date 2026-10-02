@@ -188,6 +188,25 @@ Manage or delete this alert: ${opts.manageUrl}`;
   return { subject, html, text };
 }
 
+/** Sign-in code. The link carries the code in the URL hash so it never reaches a server log. */
+export function renderSignInEmail(opts: { code: string; link: string }): { subject: string; html: string; text: string } {
+  const pretty = opts.code.length === 8 ? `${opts.code.slice(0, 4)} ${opts.code.slice(4)}` : opts.code;
+  const subject = `${pretty} is your Whimsy sign-in code`;
+  const html = `<!doctype html><html><body style="margin:0;background:#f5f3f0;font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif">
+  <table width="100%" cellpadding="0" cellspacing="0"><tr><td align="center" style="padding:24px">
+  <table width="520" cellpadding="0" cellspacing="0" style="background:#fff;border-radius:18px;overflow:hidden">
+    <tr><td style="background:linear-gradient(#132250,#8b7398 60%,#f6b877);padding:28px;color:#fff">
+      <div style="font-size:14px;opacity:.8">Whimsy</div><div style="font-size:24px;margin-top:6px">Your sign-in code</div></td></tr>
+    <tr><td style="padding:26px 28px;font-size:15px;color:#333;line-height:1.55">
+      <div style="font-size:34px;letter-spacing:.18em;font-weight:600;color:#0b0d17;margin:4px 0 18px">${esc(pretty)}</div>
+      Enter it on Whimsy, or tap below to sign in on this device.
+      <div style="margin:22px 0"><a href="${esc(opts.link)}" style="display:inline-block;background:#3154d3;color:#fff;text-decoration:none;padding:12px 22px;border-radius:24px;font-weight:600">Sign in to Whimsy</a></div>
+      <span style="color:#888;font-size:13px">The code expires in an hour. If you didn’t ask for it, ignore this email — nobody can sign in without it.</span></td></tr>
+  </table></td></tr></table></body></html>`;
+  const text = `Your Whimsy sign-in code: ${pretty}\n\nOr sign in with this link: ${opts.link}\n\nThe code expires in an hour. If you didn't ask for it, ignore this email.`;
+  return { subject, html, text };
+}
+
 export function renderRecoveryEmail(alerts: { name: string | null; url: string }[]): { subject: string; html: string; text: string } {
   const subject = 'Your Whimsy alert links';
   const items = alerts

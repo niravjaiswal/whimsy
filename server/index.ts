@@ -8,6 +8,7 @@ import { compress } from 'hono/compress';
 import { cors } from 'hono/cors';
 import { enqueueMatches } from './alerts.js';
 import { createApi } from './api.js';
+import { authFromConfig } from './auth.js';
 import { config } from './config.js';
 import { openDb } from './db.js';
 import { syncCityImages } from './images.js';
@@ -78,7 +79,7 @@ setInterval(() => void syncCityImages(db).catch(() => {}), 24 * 3600_000).unref(
 
 const app = new Hono();
 if (config.corsOrigins.length) {
-  app.use('/api/*', cors({ origin: config.corsOrigins, allowMethods: ['GET', 'POST', 'PATCH', 'DELETE'], maxAge: 86400 }));
+  app.use('/api/*', cors({ origin: config.corsOrigins, allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'], maxAge: 86400 }));
 }
 app.use('*', compress());
 app.get('/api/health', async (c) => {
@@ -89,7 +90,9 @@ app.get('/api/health', async (c) => {
     return c.json({ ok: false, error: (err as Error).message }, 503);
   }
 });
-app.route('/api', createApi({ db, scanner, bus }));
+const auth = authFromConfig();
+console.log(`[whimsy] accounts: ${auth.enabled ? 'on' : 'off'}`);
+app.route('/api', createApi({ db, scanner, bus, auth }));
 app.all('/api/*', (c) => c.json({ error: 'Not found' }, 404));
 
 const dist = path.resolve('dist');

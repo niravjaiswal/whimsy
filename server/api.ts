@@ -16,6 +16,9 @@ import {
 import { config } from './config.js';
 import { resizeWikimedia } from './images.js';
 import { matchesWhen, normalizeWhen, type WhenFilter } from './when.js';
+import crypto from 'node:crypto';
+import { claimAlerts, deleteAccountData, saveDeal, savedDeals, setHomeAirports, syncUser, unsaveDeal, userAlerts } from './accounts.js';
+import { DisabledAuth, type AuthService, type AuthUser } from './auth.js';
 import type { DB } from './db.js';
 import { TIER_RANK, type DealRow, type Tier } from './deals.js';
 import {
@@ -23,6 +26,7 @@ import {
   deliverEmail,
   renderConfirmEmail,
   renderRecoveryEmail,
+  renderSignInEmail,
   sendEmail,
   sendNtfy,
   sendPush,
@@ -39,6 +43,8 @@ export interface AppDeps {
   db: DB;
   scanner?: Scanner;
   bus: EventEmitter;
+  /** Optional accounts; defaults to disabled. */
+  auth?: AuthService;
 }
 
 interface PlaceMeta {
@@ -160,10 +166,24 @@ export function publicAlert(a: Alert) {
   return { ...rest, manageUrl: manageUrl(a) };
 }
 
-export function createApi({ db, scanner, bus }: AppDeps) {
+export function createApi({ db, scanner, bus, auth = new DisabledAuth() }: AppDeps) {
   const api = new Hono();
   const writeLimit = limiter(30, 3600_000);
   const testLimit = limiter(10, 3600_000);
+  const codeIpLimit = limiter(10, 3600_000);
+  const codeEmailLimit = limiter(5, 3600_000);
+
+  /** The signed-in user, if the request carries a valid Supabase access token. */
+  const userCache = new WeakMap<Request, Promise<AuthUser | null>>();
+  const userOf = (c: Context): Promise<AuthUser | null> => {
+    const raw = c.req.raw;
+    if (!userCache.has(raw)) {
+      const h = c.req.header('authorization') ?? '';
+      userCache.set(raw, h.startsWith('Bearer ') ? auth.verifyAccessToken(h.slice(7)) : Promise.resolve(null));
+    }
+    return userCache.get(raw)!;
+  };
+  const signInRequired = (c: Context) => c.json({ error: 'Sign in required' }, 401);
 
   api.onError((err, c) => {
     if (err instanceof ValidationError) return c.json({ error: err.message }, 400);
@@ -179,6 +199,7 @@ export function createApi({ db, scanner, bus }: AppDeps) {
       regions: Object.entries(REGION_LABELS).map(([id, label]) => ({ id, label })),
       vapidPublicKey: (await vapidKeys(db)).publicKey,
       emailEnabled: config.emailEnabled,
+      auth: config.emailEnabled ? auth.publicConfig() : null,
       tiers: ['good', 'great', 'incredible'],
     });
   });
@@ -333,6 +354,79 @@ export function createApi({ db, scanner, bus }: AppDeps) {
     }),
   );
 
+  // ── accounts (optional; see .claude/docs/adr-002-accounts.md) ─────────────
+  api.post('/auth/code', async (c) => {
+    if (!auth.enabled || !config.emailEnabled) return c.json({ error: 'Accounts aren’t available right now' }, 503);
+    const { email: raw } = await c.req.json();
+    const email = String(raw ?? '').trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email) || email.length > 254) return c.json({ error: 'That email looks off' }, 400);
+    if (!codeIpLimit(clientIp(c)) || !codeEmailLimit(email)) return c.json({ error: 'Too many codes requested — try again in a bit' }, 429);
+    let code: string;
+    try {
+      ({ code } = await auth.issueCode(email));
+    } catch (err) {
+      console.error('[auth] issueCode failed', (err as Error).message);
+      return c.json({ error: 'Couldn’t start sign-in — please try again' }, 502);
+    }
+    const link = `${config.publicUrl}/signin#email=${encodeURIComponent(email)}&code=${code}`;
+    const key = crypto.createHash('sha256').update(`${email}:${code}`).digest('hex');
+    await deliverEmail(db, { to: email, ...renderSignInEmail({ code, link }), idempotencyKey: `signin-${key}` });
+    return c.json({ ok: true });
+  });
+
+  api.get('/me', async (c) => {
+    const user = await userOf(c);
+    if (!user) return signInRequired(c);
+    const { profile, claimed } = await syncUser(db, user);
+    const places = await placeMap(db);
+    return c.json({
+      user: { id: user.id, email: user.email },
+      profile,
+      claimed,
+      alerts: (await userAlerts(db, user)).map(publicAlert),
+      saved: (await savedDeals(db, user)).map((d) => ({ ...serializeDeal(d, places), savedAt: d.saved_at })),
+    });
+  });
+
+  api.patch('/me', async (c) => {
+    const user = await userOf(c);
+    if (!user) return signInRequired(c);
+    await syncUser(db, user);
+    const { homeAirports } = await c.req.json();
+    return c.json({ homeAirports: await setHomeAirports(db, user, homeAirports) });
+  });
+
+  api.post('/me/claim', async (c) => {
+    const user = await userOf(c);
+    if (!user) return signInRequired(c);
+    await syncUser(db, user);
+    const { tokens } = await c.req.json();
+    return c.json({ claimed: await claimAlerts(db, user, tokens) });
+  });
+
+  api.put('/me/saved/:slug', async (c) => {
+    const user = await userOf(c);
+    if (!user) return signInRequired(c);
+    await syncUser(db, user);
+    if (!(await saveDeal(db, user, c.req.param('slug')))) return c.json({ error: 'Deal not found' }, 404);
+    return c.json({ ok: true });
+  });
+
+  api.delete('/me/saved/:slug', async (c) => {
+    const user = await userOf(c);
+    if (!user) return signInRequired(c);
+    await unsaveDeal(db, user, c.req.param('slug'));
+    return c.json({ ok: true });
+  });
+
+  api.delete('/me', async (c) => {
+    const user = await userOf(c);
+    if (!user) return signInRequired(c);
+    const { alerts } = await deleteAccountData(db, user);
+    await auth.deleteUser(user.id);
+    return c.json({ ok: true, deletedAlerts: alerts });
+  });
+
   // ── alerts ──────────────────────────────────────────────────────────────
   api.post('/alerts/preview', async (c) => {
     const body = await c.req.json();
@@ -349,12 +443,13 @@ export function createApi({ db, scanner, bus }: AppDeps) {
     if (!writeLimit(clientIp(c))) return c.json({ error: 'Too many requests — try again later' }, 429);
     const body = await c.req.json();
     // Alert + push subscription succeed or fail together.
+    const owner = await userOf(c);
     const alert = await db.tx(async (t) => {
-      const a = await createAlert(t, body);
+      const a = await createAlert(t, body, Date.now(), owner ?? undefined);
       if (body.pushSubscription) await savePushSubscription(t, a.id, body.pushSubscription);
       return a;
     });
-    if (alert.email && config.emailEnabled) {
+    if (alert.email && !alert.emailVerified && config.emailEnabled) {
       await sendConfirmation(db, alert).catch((e) => console.warn('[alerts] confirmation email failed', e.message));
     }
     return c.json({ alert: publicAlert(alert) }, 201);
@@ -376,9 +471,9 @@ export function createApi({ db, scanner, bus }: AppDeps) {
 
   api.patch('/alerts/:token', async (c) => {
     const before = await getAlertByToken(db, c.req.param('token'));
-    const alert = await updateAlert(db, c.req.param('token'), await c.req.json());
+    const alert = await updateAlert(db, c.req.param('token'), await c.req.json(), (await userOf(c)) ?? undefined);
     if (!alert) return c.json({ error: 'Alert not found' }, 404);
-    if (alert.email && alert.email !== before?.email && config.emailEnabled) {
+    if (alert.email && alert.email !== before?.email && !alert.emailVerified && config.emailEnabled) {
       await sendConfirmation(db, alert).catch((e) => console.warn('[alerts] confirmation email failed', e.message));
     }
     return c.json({ alert: publicAlert(alert) });
