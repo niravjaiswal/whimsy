@@ -62,12 +62,17 @@ function Created({ alert }: { alert: Alert }) {
       <div className="panel" style={{ marginTop: 40, textAlign: 'center', padding: 36 }}>
         <div style={{ fontSize: 44 }}>🛫</div>
         <h2 style={{ fontWeight: 400, fontSize: 30, letterSpacing: '-0.02em', margin: '8px 0 8px' }}>You’re on the list.</h2>
+        {alert.email && alert.channels.email && (
+          <p className="pill" style={{ margin: '0 auto 16px', display: 'inline-flex' }}>
+            📬 Check {alert.email} and click the confirmation link to turn on email alerts
+          </p>
+        )}
         <p className="text-2" style={{ lineHeight: 1.5, margin: '0 auto 22px', maxWidth: 440 }}>
           We’re watching every route that matches. When a fare drops 20%+ below normal, you’ll hear about it
           {alert.frequency === 'daily' ? ' in your daily digest' : ' right away'}.
         </p>
         <div className="muted" style={{ fontSize: 13, marginBottom: 8 }}>
-          Your private manage link {alert.email ? '(also emailed to you)' : '— save it, it’s the only key'}
+          Your private manage link — save it, it’s the only key
         </div>
         <div className="code-box">{alert.manageUrl}</div>
         <div className="row" style={{ justifyContent: 'center', marginTop: 18 }}>

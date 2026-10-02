@@ -30,6 +30,8 @@ export interface Alert {
   channels: AlertChannels;
   frequency: 'instant' | 'daily';
   paused: boolean;
+  /** Email alerts only go out once the address owner clicked the confirmation link. */
+  emailVerified: boolean;
   createdAt: number;
   lastNotifiedAt: number | null;
 }
@@ -52,6 +54,8 @@ interface AlertRowDb {
   channels: string;
   frequency: 'instant' | 'daily';
   paused: number;
+  email_verified_at: number | null;
+  email_token: string | null;
   created_at: number;
   last_notified_at: number | null;
 }
@@ -75,6 +79,7 @@ export function rowToAlert(r: AlertRowDb): Alert {
     channels: JSON.parse(r.channels),
     frequency: r.frequency,
     paused: !!r.paused,
+    emailVerified: r.email_verified_at != null,
     createdAt: r.created_at,
     lastNotifiedAt: r.last_notified_at,
   };
@@ -85,10 +90,10 @@ export class ValidationError extends Error {}
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 const NTFY_RE = /^[A-Za-z0-9_-]{6,64}$/;
 
-export type AlertInput = Partial<Omit<Alert, 'id' | 'token' | 'createdAt' | 'lastNotifiedAt'>>;
+export type AlertInput = Partial<Omit<Alert, 'id' | 'token' | 'createdAt' | 'lastNotifiedAt' | 'emailVerified'>>;
 
 /** Validate and normalize user input. Throws ValidationError. */
-export function normalizeAlertInput(input: AlertInput): Omit<Alert, 'id' | 'token' | 'createdAt' | 'lastNotifiedAt'> {
+export function normalizeAlertInput(input: AlertInput): Omit<Alert, 'id' | 'token' | 'createdAt' | 'lastNotifiedAt' | 'emailVerified'> {
   const codes = (xs: unknown, field: string) => {
     if (xs == null) return [];
     if (!Array.isArray(xs)) throw new ValidationError(`${field} must be a list`);
@@ -150,9 +155,9 @@ export async function createAlert(db: DB, input: AlertInput, now = Date.now()): 
   const a = normalizeAlertInput(input);
   const token = crypto.randomBytes(18).toString('base64url');
   const res = (await db.run(`INSERT INTO alerts (token, name, email, origins, regions, destinations, max_price, min_tier, months, depart_from, depart_to,
-         min_nights, max_nights, channels, frequency, paused, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`, token, a.name, a.email, JSON.stringify(a.origins), JSON.stringify(a.regions), JSON.stringify(a.destinations), a.maxPrice, a.minTier,
-      JSON.stringify(a.months), a.departFrom, a.departTo, a.minNights, a.maxNights, JSON.stringify(a.channels), a.frequency, a.paused ? 1 : 0, now));
+         min_nights, max_nights, channels, frequency, paused, created_at, email_token)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`, token, a.name, a.email, JSON.stringify(a.origins), JSON.stringify(a.regions), JSON.stringify(a.destinations), a.maxPrice, a.minTier,
+      JSON.stringify(a.months), a.departFrom, a.departTo, a.minNights, a.maxNights, JSON.stringify(a.channels), a.frequency, a.paused ? 1 : 0, now, a.email ? newEmailToken() : null));
   return rowToAlert(res.rows[0] as AlertRowDb);
 }
 
@@ -160,11 +165,37 @@ export async function updateAlert(db: DB, token: string, input: AlertInput): Pro
   const current = await getAlertByToken(db, token);
   if (!current) return null;
   const a = normalizeAlertInput({ ...current, ...input });
-  (await db.run(`UPDATE alerts SET name=?, email=?, origins=?, regions=?, destinations=?, max_price=?, min_tier=?, months=?, depart_from=?, depart_to=?,
+  const emailChanged = a.email !== current.email;
+  await db.run(
+    `UPDATE alerts SET name=?, email=?, origins=?, regions=?, destinations=?, max_price=?, min_tier=?, months=?, depart_from=?, depart_to=?,
        min_nights=?, max_nights=?, channels=?, frequency=?, paused=?
-     WHERE token = ?`, a.name, a.email, JSON.stringify(a.origins), JSON.stringify(a.regions), JSON.stringify(a.destinations), a.maxPrice, a.minTier,
-    JSON.stringify(a.months), a.departFrom, a.departTo, a.minNights, a.maxNights, JSON.stringify(a.channels), a.frequency, a.paused ? 1 : 0, token));
+     WHERE token = ?`,
+    a.name, a.email, JSON.stringify(a.origins), JSON.stringify(a.regions), JSON.stringify(a.destinations), a.maxPrice, a.minTier,
+    JSON.stringify(a.months), a.departFrom, a.departTo, a.minNights, a.maxNights, JSON.stringify(a.channels), a.frequency, a.paused ? 1 : 0, token,
+  );
+  if (emailChanged) {
+    // A new address has to be confirmed again.
+    await db.run('UPDATE alerts SET email_verified_at = NULL, email_token = ? WHERE token = ?', a.email ? newEmailToken() : null, token);
+  }
   return await getAlertByToken(db, token);
+}
+
+const newEmailToken = () => crypto.randomBytes(24).toString('base64url');
+
+/** The secret in the confirmation link for this alert's email, if one is pending. */
+export async function emailTokenFor(db: DB, alertId: number): Promise<string | null> {
+  return (await db.get<{ email_token: string | null }>('SELECT email_token FROM alerts WHERE id = ?', alertId))?.email_token ?? null;
+}
+
+/** Mark the address confirmed. Clicking the link twice is harmless. */
+export async function confirmEmail(db: DB, emailToken: string, now = Date.now()): Promise<Alert | null> {
+  if (!emailToken || emailToken.length < 20) return null;
+  const res = await db.run(
+    `UPDATE alerts SET email_verified_at = COALESCE(email_verified_at, ?) WHERE email_token = ? AND email IS NOT NULL RETURNING *`,
+    now,
+    emailToken,
+  );
+  return res.rows[0] ? rowToAlert(res.rows[0] as AlertRowDb) : null;
 }
 
 export async function getAlertByToken(db: DB, token: string): Promise<Alert | null> {

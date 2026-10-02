@@ -3,7 +3,9 @@ import { streamSSE } from 'hono/streaming';
 import { AIRPORTS, AIRPORT_BY_CODE, REGION_LABELS, distanceMiles, type Region } from './airports.js';
 import {
   ValidationError,
+  confirmEmail,
   createAlert,
+  emailTokenFor,
   deleteAlert,
   getAlertByToken,
   normalizeAlertInput,
@@ -16,7 +18,17 @@ import { resizeWikimedia } from './images.js';
 import { matchesWhen, normalizeWhen, type WhenFilter } from './when.js';
 import type { DB } from './db.js';
 import { TIER_RANK, type DealRow, type Tier } from './deals.js';
-import { buildMessage, sendEmail, sendNtfy, sendPush, sendWebhook, vapidKeys } from './notify/channels.js';
+import {
+  buildMessage,
+  deliverEmail,
+  renderConfirmEmail,
+  renderRecoveryEmail,
+  sendEmail,
+  sendNtfy,
+  sendPush,
+  sendWebhook,
+  vapidKeys,
+} from './notify/channels.js';
 import { manageUrl } from './notify/notifier.js';
 import { googleFlightsUrl } from './providers/google.js';
 import type { Scanner, ScanEvent } from './scanner.js';
@@ -294,7 +306,7 @@ export function createApi({ db, scanner, bus }: AppDeps) {
     const body = await c.req.json();
     const base = { channels: { push: true }, ...body };
     const a = normalizeAlertInput(base);
-    const all = await previewMatches(db, { ...a, id: 0, token: '', createdAt: 0, lastNotifiedAt: null }, 10_000);
+    const all = await previewMatches(db, { ...a, id: 0, token: '', createdAt: 0, lastNotifiedAt: null, emailVerified: false }, 10_000);
     const deals = all.slice(0, 6);
     const count = all.length;
     const places = await placeMap(db);
@@ -311,10 +323,7 @@ export function createApi({ db, scanner, bus }: AppDeps) {
       return a;
     });
     if (alert.email && config.emailEnabled) {
-      const welcome = { ...buildMessage(await previewMatches(db, alert, 6), manageUrl(alert)), title: 'Your Whimsy alert is live' };
-      await sendEmail(db, alert.email, welcome).catch((e) =>
-        console.warn('[alerts] welcome email failed', e.message),
-      );
+      await sendConfirmation(db, alert).catch((e) => console.warn('[alerts] confirmation email failed', e.message));
     }
     return c.json({ alert: publicAlert(alert) }, 201);
   });
@@ -334,9 +343,31 @@ export function createApi({ db, scanner, bus }: AppDeps) {
   });
 
   api.patch('/alerts/:token', async (c) => {
+    const before = await getAlertByToken(db, c.req.param('token'));
     const alert = await updateAlert(db, c.req.param('token'), await c.req.json());
     if (!alert) return c.json({ error: 'Alert not found' }, 404);
+    if (alert.email && alert.email !== before?.email && config.emailEnabled) {
+      await sendConfirmation(db, alert).catch((e) => console.warn('[alerts] confirmation email failed', e.message));
+    }
     return c.json({ alert: publicAlert(alert) });
+  });
+
+  // The link in the confirmation email lands on /confirm/:token, which posts here.
+  api.post('/alerts/confirm', async (c) => {
+    const { token } = await c.req.json();
+    const alert = await confirmEmail(db, String(token ?? ''));
+    if (!alert) return c.json({ error: 'That confirmation link is invalid or was replaced by a newer one' }, 404);
+    return c.json({ alert: publicAlert(alert) });
+  });
+
+  api.post('/alerts/:token/resend-confirmation', async (c) => {
+    const alert = await getAlertByToken(db, c.req.param('token'));
+    if (!alert) return c.json({ error: 'Alert not found' }, 404);
+    if (!alert.email || !config.emailEnabled) return c.json({ error: 'This alert has no email address' }, 400);
+    if (alert.emailVerified) return c.json({ ok: true, alreadyConfirmed: true });
+    if (!testLimit(`confirm:${alert.token}`)) return c.json({ error: 'Slow down — try again in a bit' }, 429);
+    await sendConfirmation(db, alert);
+    return c.json({ ok: true });
   });
 
   api.delete('/alerts/:token', async (c) => {
@@ -372,7 +403,10 @@ export function createApi({ db, scanner, bus }: AppDeps) {
         results[name] = (e as Error).message;
       }
     };
-    if (alert.channels.email && alert.email) await run('email', () => sendEmail(db, alert.email!, msg));
+    if (alert.channels.email && alert.email) {
+      if (alert.emailVerified) await run('email', () => sendEmail(db, alert.email!, msg));
+      else results.email = 'not confirmed yet — click the link in the confirmation email first';
+    }
     if (alert.channels.push) await run('push', () => sendPush(db, alert.id, msg));
     if (alert.channels.ntfy) await run('ntfy', () => sendNtfy(alert.channels.ntfy!, msg));
     if (alert.channels.webhook) await run('webhook', () => sendWebhook(alert.channels.webhook!, msg));
@@ -383,16 +417,13 @@ export function createApi({ db, scanner, bus }: AppDeps) {
     if (!writeLimit(clientIp(c))) return c.json({ error: 'Too many requests — try again later' }, 429);
     const { email } = await c.req.json();
     const e = String(email ?? '').trim().toLowerCase();
-    const rows = (await db.all('SELECT token, name FROM alerts WHERE email = ?', e)) as { token: string; name: string | null }[];
+    // Only confirmed addresses: otherwise anyone could make us email a stranger.
+    const rows = (await db.all('SELECT token, name FROM alerts WHERE email = ? AND email_verified_at IS NOT NULL', e)) as {
+      token: string;
+      name: string | null;
+    }[];
     if (rows.length && config.emailEnabled) {
-      const links = rows.map((r) => `${r.name ?? 'Alert'}: ${manageUrl(r)}`).join('\n');
-      await sendEmail(db, e, {
-        title: 'Your Whimsy alerts',
-        body: links,
-        url: config.publicUrl,
-        deals: [],
-        manageUrl: manageUrl(rows[0]),
-      }).catch(() => {});
+      await deliverEmail(db, { to: e, ...renderRecoveryEmail(rows.map((r) => ({ name: r.name, url: manageUrl(r) }))) }).catch(() => {});
     }
     // Same response either way so this can't be used to probe for emails.
     return c.json({ ok: true });
@@ -471,4 +502,16 @@ async function computeStats(db: DB, scanner?: Scanner) {
     bestDiscount: c.best,
     recent,
   };
+}
+
+async function sendConfirmation(db: DB, alert: Alert) {
+  const token = await emailTokenFor(db, alert.id);
+  if (!alert.email || !token) return;
+  const { subject, html, text } = renderConfirmEmail({
+    confirmUrl: `${config.publicUrl}/confirm/${token}`,
+    manageUrl: manageUrl(alert),
+    alertName: alert.name,
+  });
+  // Keyed per token: double-submits never send two confirmation emails.
+  await deliverEmail(db, { to: alert.email, subject, html, text, idempotencyKey: `confirm-${token}-${Math.floor(Date.now() / 600_000)}` });
 }

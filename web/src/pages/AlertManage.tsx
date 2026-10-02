@@ -19,6 +19,7 @@ export function AlertManage() {
   const [saved, setSaved] = useState(false);
   const [test, setTest] = useState<Record<string, string> | null>(null);
   const [msg, setMsg] = useState('');
+  const [note, setNote] = useState('');
 
   useEffect(() => {
     if (data?.alert) rememberAlert({ token: data.alert.token, name: data.alert.name ?? 'My alert' });
@@ -87,6 +88,22 @@ export function AlertManage() {
           </div>
         )}
         {msg && <p className="error-msg">{msg}</p>}
+        {note && <p className="ok-msg">{note}</p>}
+        {alert.email && alert.channels.email && !alert.emailVerified && (
+          <div className="pill" style={{ marginTop: 14, height: 'auto', padding: '10px 16px', whiteSpace: 'normal' }}>
+            📬 Email alerts start once you confirm {alert.email}.
+            <button
+              className="linkish"
+              onClick={() =>
+                api(`/alerts/${token}/resend-confirmation`, { method: 'POST' })
+                  .then(() => (setNote('Sent a fresh confirmation link.'), setMsg('')))
+                  .catch((e) => setMsg(e.message))
+              }
+            >
+              Resend link
+            </button>
+          </div>
+        )}
       </section>
 
       <AlertForm

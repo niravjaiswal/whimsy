@@ -5,6 +5,7 @@ import { Nav } from './components/Nav';
 import { Sky } from './components/Sky';
 import { AlertManage } from './pages/AlertManage';
 import { AlertNew } from './pages/AlertNew';
+import { ConfirmEmail } from './pages/ConfirmEmail';
 import { DealPage } from './pages/DealPage';
 import { Home } from './pages/Home';
 import { MyAlerts } from './pages/MyAlerts';
@@ -91,6 +92,7 @@ export function App() {
             <Route path="/alerts/new" element={<AlertNew />} />
             <Route path="/alerts/:token" element={<AlertManage />} />
             <Route path="/scanner" element={<Scanner />} />
+            <Route path="/confirm/:token" element={<ConfirmEmail />} />
             <Route
               path="*"
               element={

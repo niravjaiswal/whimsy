@@ -139,6 +139,7 @@ export interface Alert {
   channels: AlertChannels;
   frequency: 'instant' | 'daily';
   paused: boolean;
+  emailVerified: boolean;
   createdAt: number;
   lastNotifiedAt: number | null;
   manageUrl: string;

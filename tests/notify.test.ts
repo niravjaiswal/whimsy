@@ -57,6 +57,7 @@ describe('flushNotifications', () => {
     const route2 = await addRoute(db, 'DTW', 'CDG');
     // Local http test server: validation requires https, so write the URL directly.
     const a = await createAlert(db, { email: 'me@example.com', channels: { email: true, webhook: 'https://example.com/hook' } });
+    await db.run('UPDATE alerts SET email_verified_at = 1 WHERE id = ?', a.id);
     (await db.run('UPDATE alerts SET channels = ? WHERE id = ?', JSON.stringify({ email: true, webhook: `http://127.0.0.1:${port}/ok` }),
       a.id,));
     const d1 = (await recordResult(db, route, fare({ price: 400 })))!.deal;
@@ -96,10 +97,24 @@ describe('flushNotifications', () => {
     config.allowPrivateWebhooks = false;
   });
 
+  it('never emails deals to an unconfirmed address, but other channels still go out', async () => {
+    config.allowPrivateWebhooks = true;
+    const db = await memDb();
+    const route = await addRoute(db);
+    const a = await createAlert(db, { email: 'stranger@example.com', channels: { email: true, webhook: 'https://example.com/hook' } });
+    await db.run('UPDATE alerts SET channels = ? WHERE id = ?', JSON.stringify({ email: true, webhook: `http://127.0.0.1:${port}/ok` }), a.id);
+    await enqueueMatches(db, (await recordResult(db, route, fare({ price: 400 })))!.deal);
+    const r = await flushNotifications(db);
+    expect(r.results.map((x) => x.channel)).toEqual(['webhook']);
+    expect(((await db.get('SELECT COUNT(*) n FROM outbox')) as any).n).toBe(0);
+    config.allowPrivateWebhooks = false;
+  });
+
   it('holds daily digests until 24h after the last send', async () => {
     const db = await memDb();
     const route = await addRoute(db);
     const a = await createAlert(db, { email: 'd@example.com', frequency: 'daily', channels: { email: true } });
+    await db.run('UPDATE alerts SET email_verified_at = 1 WHERE id = ?', a.id);
     (await db.run('UPDATE alerts SET last_notified_at = ? WHERE id = ?', Date.now() - 3600_000, a.id));
     await enqueueMatches(db, (await recordResult(db, route, fare({ price: 400 })))!.deal);
     expect((await flushNotifications(db)).alerts).toBe(0);

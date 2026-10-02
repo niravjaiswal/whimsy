@@ -66,8 +66,11 @@ describe('api', () => {
     expect(alert.token).toBeTruthy();
     expect(alert.id).toBeUndefined();
     expect(alert.manageUrl).toContain(`/alerts/${alert.token}`);
-    // Welcome email lands in the dev outbox.
-    expect(((await db.get('SELECT COUNT(*) n FROM outbox')) as any).n).toBe(1);
+    // A confirmation email (not deals) lands in the dev outbox.
+    const mail = (await db.get('SELECT subject, text FROM outbox')) as any;
+    expect(mail.subject).toMatch(/Confirm your email/);
+    const confirmToken = mail.text.match(/\/confirm\/([A-Za-z0-9_-]+)/)[1];
+    expect(alert.emailVerified).toBe(false);
 
     const got = await (await json(`/alerts/${alert.token}`)).json();
     expect(got.matches).toHaveLength(1);
@@ -78,11 +81,37 @@ describe('api', () => {
     const prev = await (await json('/alerts/preview', { method: 'POST', body: JSON.stringify({ regions: ['europe'] }) })).json();
     expect(prev.count).toBe(1);
 
+    // Unconfirmed: no deal emails, not even tests.
+    const before = await (await json(`/alerts/${alert.token}/test`, { method: 'POST' })).json();
+    expect(before.results.email).toMatch(/not confirmed/);
+    expect((await json('/alerts/confirm', { method: 'POST', body: JSON.stringify({ token: 'nope-nope-nope-nope-nope' }) })).status).toBe(404);
+    const confirmed = await (await json('/alerts/confirm', { method: 'POST', body: JSON.stringify({ token: confirmToken }) })).json();
+    expect(confirmed.alert.emailVerified).toBe(true);
     const test = await (await json(`/alerts/${alert.token}/test`, { method: 'POST' })).json();
     expect(test.results.email).toBe('ok');
 
     expect((await json(`/alerts/${alert.token}`, { method: 'DELETE' })).status).toBe(200);
     expect((await json(`/alerts/${alert.token}`)).status).toBe(404);
+  });
+
+  it('re-confirms a changed email and only recovers links for confirmed addresses', async () => {
+    const { db, json } = await setup();
+    const { alert } = await (await json('/alerts', { method: 'POST', body: JSON.stringify({ email: 'a@example.com', channels: { email: true } }) })).json();
+    // Unconfirmed address: recovery stays silent.
+    await json('/alerts/recover', { method: 'POST', body: JSON.stringify({ email: 'a@example.com' }) });
+    expect(((await db.get('SELECT COUNT(*) n FROM outbox')) as any).n).toBe(1);
+    const token1 = ((await db.get('SELECT email_token FROM alerts')) as any).email_token;
+    await json('/alerts/confirm', { method: 'POST', body: JSON.stringify({ token: token1 }) });
+    await json('/alerts/recover', { method: 'POST', body: JSON.stringify({ email: 'a@example.com' }) });
+    const recovery = (await db.get("SELECT text FROM outbox WHERE subject = 'Your Whimsy alert links'")) as any;
+    expect(recovery.text).toContain(`/alerts/${alert.token}`);
+    // Changing the address resets confirmation and sends a fresh link.
+    const upd = await (await json(`/alerts/${alert.token}`, { method: 'PATCH', body: JSON.stringify({ email: 'b@example.com' }) })).json();
+    expect(upd.alert.emailVerified).toBe(false);
+    const token2 = ((await db.get('SELECT email_token FROM alerts')) as any).email_token;
+    expect(token2).not.toBe(token1);
+    expect((await json('/alerts/confirm', { method: 'POST', body: JSON.stringify({ token: token1 }) })).status).toBe(404);
+    expect(((await db.get("SELECT COUNT(*) n FROM outbox WHERE recipient = 'b@example.com'")) as any).n).toBe(1);
   });
 
   it('validates push subscriptions', async () => {

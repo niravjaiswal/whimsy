@@ -139,6 +139,50 @@ export async function deliverEmail(db: DB, mail: OutgoingEmail): Promise<void> {
   );
 }
 
+/** "Confirm your email" — the only email an unconfirmed address ever receives. */
+export function renderConfirmEmail(opts: { confirmUrl: string; manageUrl: string; alertName: string | null }): { subject: string; html: string; text: string } {
+  const subject = 'Confirm your email for Whimsy flight deals';
+  const html = `<!doctype html><html><body style="margin:0;background:#f5f3f0;font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif">
+  <table width="100%" cellpadding="0" cellspacing="0"><tr><td align="center" style="padding:24px">
+  <table width="560" cellpadding="0" cellspacing="0" style="background:#fff;border-radius:18px;overflow:hidden">
+    <tr><td style="background:linear-gradient(#132250,#8b7398 60%,#f6b877);padding:28px 28px 22px;color:#fff">
+      <div style="font-size:14px;opacity:.8">Whimsy</div>
+      <div style="font-size:24px;margin-top:6px">One click and you’re on the list</div></td></tr>
+    <tr><td style="padding:24px 28px;font-size:15px;color:#333;line-height:1.55">
+      Someone (hopefully you) asked Whimsy to email this address when cheap flights show up${opts.alertName ? ` for <b>${esc(opts.alertName)}</b>` : ''}.
+      Confirm and we’ll start sending deals.
+      <div style="margin:22px 0"><a href="${esc(opts.confirmUrl)}" style="display:inline-block;background:#3154d3;color:#fff;text-decoration:none;padding:12px 22px;border-radius:24px;font-weight:600">Confirm my email</a></div>
+      Didn’t sign up? Ignore this email and you won’t hear from us again.</td></tr>
+    <tr><td style="padding:0 28px 26px;font-size:12px;color:#888"><a href="${esc(opts.manageUrl)}" style="color:#888">Manage or delete this alert</a></td></tr>
+  </table></td></tr></table></body></html>`;
+  const text = `Confirm your email for Whimsy flight deals
+
+Someone (hopefully you) asked Whimsy to email this address when cheap flights show up${opts.alertName ? ` for "${opts.alertName}"` : ''}.
+
+Confirm: ${opts.confirmUrl}
+
+Didn't sign up? Ignore this email and you won't hear from us again.
+Manage or delete this alert: ${opts.manageUrl}`;
+  return { subject, html, text };
+}
+
+export function renderRecoveryEmail(alerts: { name: string | null; url: string }[]): { subject: string; html: string; text: string } {
+  const subject = 'Your Whimsy alert links';
+  const items = alerts
+    .map((a) => `<li style="margin:8px 0"><a href="${esc(a.url)}" style="color:#3154d3">${esc(a.name ?? 'Deal alert')}</a></li>`)
+    .join('');
+  const html = `<!doctype html><html><body style="margin:0;background:#f5f3f0;font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif">
+  <table width="100%" cellpadding="0" cellspacing="0"><tr><td align="center" style="padding:24px">
+  <table width="560" cellpadding="0" cellspacing="0" style="background:#fff;border-radius:18px;overflow:hidden">
+    <tr><td style="background:linear-gradient(#132250,#8b7398 60%,#f6b877);padding:28px;color:#fff;font-size:22px">Your Whimsy alerts</td></tr>
+    <tr><td style="padding:20px 28px 28px;font-size:15px;color:#333;line-height:1.5">Here are the private links to manage each alert on this address:
+      <ul style="padding-left:18px">${items}</ul>
+      Anyone with a link can edit that alert, so keep them to yourself.</td></tr>
+  </table></td></tr></table></body></html>`;
+  const text = `Your Whimsy alerts\n\n${alerts.map((a) => `${a.name ?? 'Deal alert'}: ${a.url}`).join('\n')}\n\nAnyone with a link can edit that alert, so keep them to yourself.`;
+  return { subject, html, text };
+}
+
 export async function sendEmail(db: DB, to: string, msg: Message & { manageUrl: string }, idempotencyKey?: string): Promise<void> {
   const { html, text } = renderEmail(msg);
   await deliverEmail(db, { to, subject: msg.title.replace(/^✈\s*/, ''), html, text, idempotencyKey });
