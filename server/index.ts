@@ -92,7 +92,7 @@ app.get('/api/health', async (c) => {
 });
 const auth = authFromConfig();
 console.log(`[whimsy] accounts: ${auth.enabled ? 'on' : 'off'}`);
-app.route('/api', createApi({ db, scanner, bus, auth }));
+app.route('/api', createApi({ db, scanner, bus, auth, feedCacheMs: 20_000 }));
 app.all('/api/*', (c) => c.json({ error: 'Not found' }, 404));
 
 const dist = path.resolve('dist');

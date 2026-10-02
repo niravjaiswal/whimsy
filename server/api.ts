@@ -45,7 +45,17 @@ export interface AppDeps {
   bus: EventEmitter;
   /** Optional accounts; defaults to disabled. */
   auth?: AuthService;
+  /**
+   * How long feed reads (/deals, /dips) may be served from memory. Scanner deal
+   * events clear it early. 0 (the default, used by tests) disables it.
+   */
+  feedCacheMs?: number;
 }
+
+/** Every deals column except `history` (the 60-day chart only the deal page draws). */
+const FEED_COLUMNS = `id, slug, route_id, origin, destination, depart_date, return_date, price, first_price, baseline,
+  typical_low, typical_high, discount, tier, score, airline, airline_code, stops, duration_minutes, depart_time,
+  arrive_time, via, booking_url, status, found_at, updated_at, verified_at, expired_at`;
 
 interface PlaceMeta {
   city: string | null;
@@ -166,8 +176,22 @@ export function publicAlert(a: Alert) {
   return { ...rest, manageUrl: manageUrl(a) };
 }
 
-export function createApi({ db, scanner, bus, auth = new DisabledAuth() }: AppDeps) {
+export function createApi({ db, scanner, bus, auth = new DisabledAuth(), feedCacheMs = 0 }: AppDeps) {
   const api = new Hono();
+
+  // Hot read paths share one in-memory snapshot; a new/changed deal drops it.
+  const feedCache = new Map<string, { at: number; value: Promise<unknown> }>();
+  const cachedFeed = <T>(key: string, load: () => Promise<T>): Promise<T> => {
+    const hit = feedCache.get(key);
+    if (hit && Date.now() - hit.at < feedCacheMs) return hit.value as Promise<T>;
+    const value = load();
+    if (feedCacheMs > 0) {
+      feedCache.set(key, { at: Date.now(), value });
+      value.catch(() => feedCache.delete(key));
+    }
+    return value;
+  };
+  bus.on('deal', () => feedCache.clear());
   const writeLimit = limiter(30, 3600_000);
   const testLimit = limiter(10, 3600_000);
   const codeIpLimit = limiter(10, 3600_000);
@@ -193,6 +217,8 @@ export function createApi({ db, scanner, bus, auth = new DisabledAuth() }: AppDe
   });
 
   api.get('/meta', async (c) => {
+    // Airports/regions/keys change rarely; let the browser reuse it across reloads.
+    c.header('Cache-Control', 'public, max-age=300, stale-while-revalidate=86400');
     const places = await placeMap(db);
     return c.json({
       airports: AIRPORTS.map((a) => ({ ...a, image: places.get(a.code)?.thumb ?? null })),
@@ -224,7 +250,7 @@ export function createApi({ db, scanner, bus, auth = new DisabledAuth() }: AppDe
     const tier = (c.req.query('tier') ?? 'good') as Tier;
     const sort = c.req.query('sort') ?? 'score';
     const limit = Math.min(200, Number(c.req.query('limit')) || 60);
-    const all = (await db.all("SELECT * FROM deals WHERE status = 'active'")) as unknown as DealRow[];
+    const all = await cachedFeed('active', async () => (await db.all(`SELECT ${FEED_COLUMNS} FROM deals WHERE status = 'active'`)) as unknown as DealRow[]);
     const filtered = all.filter((d) => {
       if (origins.length && !origins.includes(d.origin)) return false;
       if (dests.length && !dests.includes(d.destination)) return false;
@@ -292,7 +318,7 @@ export function createApi({ db, scanner, bus, auth = new DisabledAuth() }: AppDe
 
   // Fares currently under their typical price that aren't (yet) deals — "dipping".
   api.get('/dips', async (c) => {
-    const rows = (await db.all(`SELECT r.origin, r.destination, o.depart_date, o.return_date, o.price, o.typical, o.observed_at
+    const rows = await cachedFeed('dips', async () => (await db.all(`SELECT r.origin, r.destination, o.depart_date, o.return_date, o.price, o.typical, o.observed_at
          FROM observations o JOIN routes r ON r.id = o.route_id
          WHERE o.observed_at > ? AND o.typical IS NOT NULL AND o.price < o.typical
            AND NOT EXISTS (SELECT 1 FROM deals d WHERE d.route_id = r.id AND d.status = 'active')
@@ -304,7 +330,7 @@ export function createApi({ db, scanner, bus, auth = new DisabledAuth() }: AppDe
       price: number;
       typical: number;
       observed_at: number;
-    }[];
+    }[]);
     const seen = new Set<string>();
     const places = await placeMap(db);
     const dips = rows

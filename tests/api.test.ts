@@ -21,6 +21,21 @@ describe('api', () => {
     expect(m.vapidPublicKey).toMatch(/^[A-Za-z0-9_-]{80,}$/);
   });
 
+  it('serves the feed from a snapshot that deal events invalidate, without chart history', async () => {
+    const db = await memDb();
+    const bus = new EventEmitter();
+    const api = createApi({ db, bus, feedCacheMs: 60_000 });
+    const total = async () => (await (await api.request('/deals')).json()).total;
+    const first = await recordResult(db, await addRoute(db), fare({ price: 400 }));
+    const feed = await (await api.request('/deals')).json();
+    expect(feed.total).toBe(1);
+    expect(feed.deals[0].history).toEqual([]); // the deal page has it; cards don't need it
+    await recordResult(db, await addRoute(db, 'ORD', 'NRT', 6300), fare({ origin: 'ORD', destination: 'NRT', price: 460, typical: 800 }));
+    expect(await total()).toBe(1); // still the snapshot
+    bus.emit('deal', { kind: 'new', deal: first!.deal });
+    expect(await total()).toBe(2);
+  });
+
   it('lists and filters deals', async () => {
     const { db, json } = await setup();
     await recordResult(db, await addRoute(db), fare({ price: 400 }));
