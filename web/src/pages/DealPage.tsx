@@ -1,6 +1,6 @@
 import { Link, useParams } from 'react-router-dom';
 import { useApi, type Deal, type OtherDate } from '../api';
-import { CityImage, MiniDeal, PriceRange, SaveButton, TierBadge } from '../components/DealCard';
+import { CityImage, HERO_MAX, HERO_SIZES, MiniDeal, PriceRange, SaveButton, TierBadge } from '../components/DealCard';
 import { PriceChart } from '../components/PriceChart';
 import { ago, dateRange, duration, money, num, pct, shortDate, stopsLabel, time12 } from '../format';
 import { BellIcon } from './Home';
@@ -44,7 +44,7 @@ export function DealPage() {
       </div>
 
       <section className={`deal-hero ${d.destination.imageHd ? 'hd' : ''}`}>
-        <CityImage src={d.destination.image} alt="" sizes="(max-width: 1180px) 100vw, 1180px" eager />
+        <CityImage src={d.destination.image} alt="" sizes={HERO_SIZES} max={HERO_MAX} eager />
         {d.destination.imageCredit && (
           <a
             className="photo-credit"
@@ -59,7 +59,7 @@ export function DealPage() {
           <div>
             {d.destination.image && (
               <div className="postcard">
-                <CityImage src={d.destination.thumb ?? d.destination.image} alt={d.destination.city} sizes="150px" />
+                <CityImage src={d.destination.thumb ?? d.destination.image} alt={d.destination.city} sizes="150px" max={150} />
                 <span>{d.destination.code}</span>
               </div>
             )}

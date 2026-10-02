@@ -2,11 +2,61 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": null,
   "installCommand": "npm ci",
-  "buildCommand": "npx vite build",
+  "buildCommand": "VITE_IMAGE_OPTIMIZER=1 npx vite build",
   "outputDirectory": "dist",
-  "rewrites": [{ "source": "/((?!assets/|sw\\.js|favicon\\.svg|manifest\\.webmanifest).*)", "destination": "/index.html" }],
+  "rewrites": [
+    {
+      "source": "/((?!assets/|_vercel/|sw\\.js|favicon\\.svg|manifest\\.webmanifest).*)",
+      "destination": "/index.html"
+    }
+  ],
   "headers": [
-    { "source": "/assets/(.*)", "headers": [{ "key": "Cache-Control", "value": "public, max-age=31536000, immutable" }] },
-    { "source": "/sw.js", "headers": [{ "key": "Cache-Control", "value": "no-cache" }] }
-  ]
+    {
+      "source": "/assets/(.*)",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=31536000, immutable"
+        }
+      ]
+    },
+    {
+      "source": "/sw.js",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-cache"
+        }
+      ]
+    }
+  ],
+  "images": {
+    "sizes": [
+      96,
+      256,
+      384,
+      640,
+      828,
+      1200,
+      1920
+    ],
+    "qualities": [
+      70
+    ],
+    "formats": [
+      "image/avif",
+      "image/webp"
+    ],
+    "minimumCacheTTL": 2678400,
+    "remotePatterns": [
+      {
+        "protocol": "https",
+        "hostname": "thumb.wikimedia.org"
+      },
+      {
+        "protocol": "https",
+        "hostname": "upload.wikimedia.org"
+      }
+    ]
+  }
 }

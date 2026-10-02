@@ -1,28 +1,42 @@
-import { useState } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAccount } from '../account';
-import type { Deal } from '../api';
+import { prefetch, type Deal } from '../api';
+import { imageSources, preloadImage } from '../img';
 import { TIER_LABEL, ago, dateRange, duration, money, pct, stopsLabel } from '../format';
 
-// Wikimedia serves only standard thumbnail widths; offer the browser a few.
-const WIKI_WIDTHS = [500, 960, 1280];
-const isWikimedia = (src: string) => /wikimedia\.org\/.+\/\d+px-/.test(src);
-const wikiSize = (src: string, w: number) => src.replace(/\/\d+px-([^/]+)$/, `/${w}px-$1`);
+/** Widest a feed card's photo gets (3-column grid), and the deal page hero. */
+export const CARD_MAX = 400;
+export const HERO_MAX = 1180;
+export const HERO_SIZES = '(max-width: 1180px) 100vw, 1180px';
 
-export function CityImage({ src, alt, sizes, eager }: { src: string | null; alt: string; sizes?: string; eager?: boolean }) {
+/**
+ * City photo, sized for its slot (see img.ts) and faded in once decoded so tiles
+ * never paint half-loaded. `max` is the widest the slot gets, in CSS pixels.
+ */
+export function CityImage({ src, alt, sizes, eager, max = 420 }: { src: string | null; alt: string; sizes?: string; eager?: boolean; max?: number }) {
   const [failed, setFailed] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const ref = useRef<HTMLImageElement>(null);
+  // Already in the memory cache (back navigation): show without the fade.
+  useLayoutEffect(() => {
+    if (ref.current?.complete && ref.current.naturalWidth) setLoaded(true);
+  }, [src]);
   if (!src || failed) return null;
-  const srcSet = isWikimedia(src) ? WIKI_WIDTHS.map((w) => `${wikiSize(src, w)} ${w}w`).join(', ') : undefined;
+  const { src: url, srcSet } = imageSources(src, max);
   return (
     <img
-      src={src}
+      ref={ref}
+      src={url}
       srcSet={srcSet}
-      sizes={srcSet ? (sizes ?? '(max-width: 640px) 100vw, 420px') : undefined}
+      sizes={srcSet ? (sizes ?? `(max-width: 640px) 100vw, ${max}px`) : undefined}
       alt={alt}
       loading={eager ? 'eager' : 'lazy'}
       fetchPriority={eager ? 'high' : undefined}
       decoding="async"
       referrerPolicy="no-referrer"
+      className={`city-img ${loaded ? 'in' : ''}`}
+      onLoad={() => setLoaded(true)}
       onError={() => setFailed(true)}
     />
   );
@@ -51,11 +65,20 @@ export function TierBadge({ deal }: { deal: Pick<Deal, 'tier' | 'discount'> }) {
   );
 }
 
-export function DealCard({ deal, fresh }: { deal: Deal; fresh?: boolean }) {
+export function DealCard({ deal, fresh, eager }: { deal: Deal; fresh?: boolean; eager?: boolean }) {
   return (
-    <Link to={`/deal/${deal.slug}`} className={`deal-card ${fresh ? 'fresh' : ''}`} aria-label={`${deal.destination.city} for ${money(deal.price)}`}>
+    <Link
+      to={`/deal/${deal.slug}`}
+      className={`deal-card ${fresh ? 'fresh' : ''}`}
+      aria-label={`${deal.destination.city} for ${money(deal.price)}`}
+      // Start loading the deal page (data + hero photo) while the pointer is on its way.
+      onPointerEnter={() => {
+        prefetch(`/deals/${deal.slug}`);
+        preloadImage(deal.destination.image, HERO_MAX, HERO_SIZES);
+      }}
+    >
       <div className="dc-media">
-        <CityImage src={deal.destination.thumb ?? deal.destination.image} alt="" />
+        <CityImage src={deal.destination.thumb ?? deal.destination.image} alt="" eager={eager} max={CARD_MAX} />
         <div className="dc-badges">
           <TierBadge deal={deal} />
           <span className="row" style={{ gap: 6 }}>
@@ -107,8 +130,8 @@ export function DealCard({ deal, fresh }: { deal: Deal; fresh?: boolean }) {
 
 export function MiniDeal({ deal }: { deal: Deal }) {
   return (
-    <Link to={`/deal/${deal.slug}`} className="mini-deal">
-      {deal.destination.thumb ? <CityImage src={deal.destination.thumb} alt="" sizes="48px" /> : <div className="ph" />}
+    <Link to={`/deal/${deal.slug}`} className="mini-deal" onPointerEnter={() => prefetch(`/deals/${deal.slug}`)}>
+      {deal.destination.thumb ? <CityImage src={deal.destination.thumb} alt="" sizes="48px" max={48} /> : <div className="ph" />}
       <div style={{ minWidth: 0 }}>
         <div>
           {deal.origin.city} → {deal.destination.city}
