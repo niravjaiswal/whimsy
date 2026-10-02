@@ -59,6 +59,17 @@ export interface Deal {
   foundAt: number;
   updatedAt: number;
   verifiedAt: number;
+  /** Feed only: the route's other qualifying dates (the card shows the best one). */
+  otherDates?: OtherDate[];
+  otherCount?: number;
+}
+
+export interface OtherDate {
+  slug: string;
+  departDate: string;
+  returnDate: string | null;
+  price: number;
+  discount: number;
 }
 
 export interface Dip {

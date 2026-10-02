@@ -76,6 +76,11 @@ export function DealCard({ deal, fresh }: { deal: Deal; fresh?: boolean }) {
               {dateRange(deal.departDate, deal.returnDate)}
               {deal.nights ? <span className="muted"> · {deal.nights} nights</span> : null}
             </div>
+            {deal.otherCount ? (
+              <div className="dc-more">
+                +{deal.otherCount} more date{deal.otherCount > 1 ? 's' : ''} from {money(Math.min(...(deal.otherDates ?? []).map((o) => o.price)))}
+              </div>
+            ) : null}
           </div>
           <div className="dc-price">
             <div className="price">{money(deal.price)}</div>

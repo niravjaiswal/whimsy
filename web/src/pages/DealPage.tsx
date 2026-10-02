@@ -1,5 +1,5 @@
 import { Link, useParams } from 'react-router-dom';
-import { useApi, type Deal } from '../api';
+import { useApi, type Deal, type OtherDate } from '../api';
 import { CityImage, MiniDeal, PriceRange, TierBadge } from '../components/DealCard';
 import { PriceChart } from '../components/PriceChart';
 import { ago, dateRange, duration, money, num, pct, shortDate, stopsLabel, time12 } from '../format';
@@ -7,7 +7,7 @@ import { BellIcon } from './Home';
 
 export function DealPage() {
   const { slug } = useParams();
-  const { data, error, loading } = useApi<{ deal: Deal; related: Deal[] }>(`/deals/${slug}`);
+  const { data, error, loading } = useApi<{ deal: Deal; related: Deal[]; sameRoute: OtherDate[] }>(`/deals/${slug}`);
 
   if (loading && !data)
     return (
@@ -30,7 +30,7 @@ export function DealPage() {
       </div>
     );
 
-  const { deal: d, related } = data;
+  const { deal: d, related, sameRoute } = data;
   const expired = d.status !== 'active';
   const saved = d.baseline - d.price;
   const alertHref = `/alerts/new?from=${d.origin.code}&dest=${d.destination.code}`;
@@ -128,6 +128,23 @@ export function DealPage() {
               Outbound shown. Google Flights will show matching return options and every bookable fare for these dates.
             </p>
           </div>
+
+          {sameRoute.length > 0 && (
+            <div className="panel">
+              <div className="section-head" style={{ marginBottom: 10 }}>
+                <h2 style={{ fontSize: 19 }}>Other dates on this route</h2>
+                <span className="sub">All {sameRoute.length + 1} qualify as deals</span>
+              </div>
+              <div className="chips">
+                {sameRoute.map((o) => (
+                  <Link key={o.slug} to={`/deal/${o.slug}`} className="chip">
+                    {dateRange(o.departDate, o.returnDate)} · <b style={{ fontWeight: 500, color: 'var(--text)' }}>{money(o.price)}</b>
+                    <span className="good">−{pct(o.discount)}</span>
+                  </Link>
+                ))}
+              </div>
+            </div>
+          )}
 
           <div className="panel">
             <div className="section-head" style={{ marginBottom: 6 }}>
