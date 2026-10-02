@@ -148,10 +148,18 @@ button {
   bottom: -4%;
   height: 58%;
 }
+.sky-clouds .cloud-layer {
+  position: absolute;
+  inset: 0;
+  will-change: transform;
+}
 .sky-clouds svg {
   width: 100%;
   height: 100%;
 }
+/* The (expensive) SVG noise filters render once into each layer; only the
+   finished layer moves, on the compositor. Animating inside the SVG instead
+   re-ran the filters every frame and starved scrolling and image decode. */
 .cloud-drift-a {
   animation: drift 90s linear infinite alternate;
 }
@@ -722,8 +730,15 @@ a.pill:hover {
   height: 100%;
   object-fit: cover;
   transform: scale(1.02);
-  transition: transform 0.6s var(--ease);
-  filter: saturate(1.05);
+  transition: transform 0.6s var(--ease), opacity 0.35s var(--ease);
+}
+/* Photos fade in once decoded instead of painting top-down over the placeholder. */
+.city-img {
+  opacity: 0;
+  transition: opacity 0.35s var(--ease);
+}
+.city-img.in {
+  opacity: 1;
 }
 .deal-card:hover .dc-media img {
   transform: scale(1.07);
@@ -761,8 +776,8 @@ a.pill:hover {
   font-size: 12px;
   font-weight: 500;
   letter-spacing: 0.01em;
-  background: rgba(10, 10, 14, 0.72);
-  backdrop-filter: blur(10px);
+  /* Solid, not backdrop-blurred: dozens of blurred badges re-filter on every scrolled frame. */
+  background: rgba(10, 10, 14, 0.78);
 }
 .badge.good {
   color: var(--good);
@@ -1795,8 +1810,8 @@ a.pill:hover {
   padding: 0;
   justify-content: center;
   font-size: 13px;
-  background: rgba(10, 10, 14, 0.72);
-  backdrop-filter: blur(10px);
+  background: rgba(10, 10, 14, 0.78);
+  box-shadow: none;
 }
 .save-btn.on {
   color: #ff8fa3;
