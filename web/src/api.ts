@@ -201,20 +201,60 @@ export async function api<T>(path: string, init?: RequestInit & { json?: unknown
   return data as T;
 }
 
-/** Fetch-on-mount hook with refetch. */
-export function useApi<T>(path: string | null, deps: unknown[] = []) {
-  const [data, setData] = useState<T | null>(null);
+/*
+ * GET responses are kept in memory (stale-while-revalidate): a page you've seen
+ * renders instantly from cache when you come back to it, and quietly refreshes.
+ * Concurrent requests for the same path share one fetch.
+ */
+const responseCache = new Map<string, unknown>();
+const inflight = new Map<string, Promise<unknown>>();
+// Alert manage pages are private and mutable; always fetch those fresh.
+const cacheable = (path: string) => !path.startsWith('/alerts/');
+
+export function getCached<T>(path: string): Promise<T> {
+  let p = inflight.get(path);
+  if (!p) {
+    p = api<T>(path)
+      .then((d) => {
+        if (cacheable(path)) {
+          responseCache.delete(path); // re-insert to keep LRU order
+          responseCache.set(path, d);
+          if (responseCache.size > 60) responseCache.delete(responseCache.keys().next().value!);
+        }
+        return d;
+      })
+      .finally(() => inflight.delete(path));
+    inflight.set(path, p);
+  }
+  return p as Promise<T>;
+}
+
+/** Start a request early (before the page that needs it has rendered). */
+export const prefetch = (path: string) => void getCached(path).catch(() => {});
+
+/**
+ * Fetch-on-mount hook with refetch; serves cached data first. With
+ * `keepPrevious`, the last path's data stays up while a new path loads (filters);
+ * otherwise a new path starts empty so a page never shows another page's data.
+ */
+export function useApi<T>(path: string | null, opts: { keepPrevious?: boolean } = {}) {
+  const [state, setState] = useState<{ path: string | null; data: T | null }>(() => ({
+    path,
+    data: path ? ((responseCache.get(path) as T) ?? null) : null,
+  }));
   const [error, setError] = useState<ApiError | null>(null);
   const [loading, setLoading] = useState(!!path);
   const [nonce, setNonce] = useState(0);
   useEffect(() => {
     if (!path) return;
     let cancelled = false;
+    const cached = responseCache.get(path) as T | undefined;
+    if (cached !== undefined) setState({ path, data: cached });
     setLoading(true);
-    api<T>(path)
+    getCached<T>(path)
       .then((d) => {
         if (!cancelled) {
-          setData(d);
+          setState({ path, data: d });
           setError(null);
         }
       })
@@ -223,8 +263,10 @@ export function useApi<T>(path: string | null, deps: unknown[] = []) {
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [path, nonce, ...deps]);
+  }, [path, nonce]);
+  const data: T | null =
+    state.path === path || opts.keepPrevious ? state.data : path ? ((responseCache.get(path) as T | undefined) ?? null) : null;
+  const setData = (d: T) => setState({ path, data: d });
   return { data, error, loading, refetch: () => setNonce((n) => n + 1), setData };
 }
 

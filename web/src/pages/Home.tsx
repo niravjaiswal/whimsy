@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { Suspense, lazy, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useLive } from '../App';
 import { useAccount } from '../account';
@@ -6,8 +6,10 @@ import { useApi, useMeta, type Deal, type Dip, type Region, type ScanEvent, type
 import { CityImage, DealCard } from '../components/DealCard';
 import { AirportList, Field, RegionList, summarize } from '../components/Pickers';
 import { WhenPicker, isAnyWhen, whenFromParams, whenQuery, whenSummary, whenToParams, type When } from '../components/WhenPicker';
-import { WorldMap } from '../components/WorldMap';
 import { REGION_EMOJI, dateRange, money, num, pct } from '../format';
+
+// The map (and its geo library) only loads when someone opens the Atlas view.
+const WorldMap = lazy(() => import('../components/WorldMap').then((m) => ({ default: m.WorldMap })));
 
 const SORTS = [
   { id: 'score', label: 'Best' },
@@ -48,6 +50,28 @@ function Ticker({ scans }: { scans: ScanEvent[] }) {
   );
 }
 
+export const DIPS_PATH = '/dips?limit=8';
+
+/** The feed request for the home page's URL filters (also used to prefetch it at boot). */
+export function feedPath(params: URLSearchParams) {
+  const q = new URLSearchParams();
+  const origins = params.get('from')?.split(',').filter(Boolean) ?? [];
+  const regions = params.get('to')?.split(',').filter(Boolean) ?? [];
+  if (origins.length) q.set('origin', origins.join(','));
+  if (regions.length) q.set('region', regions.join(','));
+  const wq = whenQuery(whenFromParams(params));
+  if (wq.months.length) q.set('month', wq.months.join(','));
+  if (wq.departFrom && wq.departTo) (q.set('departFrom', wq.departFrom), q.set('departTo', wq.departTo));
+  if (wq.minNights != null) q.set('minNights', String(wq.minNights));
+  if (wq.maxNights != null) q.set('maxNights', String(wq.maxNights));
+  const max = Number(params.get('max'));
+  if (max) q.set('maxPrice', String(max));
+  q.set('tier', params.get('tier') ?? 'good');
+  q.set('sort', params.get('sort') ?? 'score');
+  q.set('limit', '120');
+  return `/deals?${q}`;
+}
+
 export function Home() {
   const meta = useMeta();
   const nav = useNavigate();
@@ -86,20 +110,8 @@ export function Home() {
     setParams(next, { replace: true });
   };
 
-  const q = new URLSearchParams();
-  if (origins.length) q.set('origin', origins.join(','));
-  if (regions.length) q.set('region', regions.join(','));
-  const wq = whenQuery(when);
-  if (wq.months.length) q.set('month', wq.months.join(','));
-  if (wq.departFrom && wq.departTo) (q.set('departFrom', wq.departFrom), q.set('departTo', wq.departTo));
-  if (wq.minNights != null) q.set('minNights', String(wq.minNights));
-  if (wq.maxNights != null) q.set('maxNights', String(wq.maxNights));
-  if (maxPrice) q.set('maxPrice', String(maxPrice));
-  q.set('tier', tier);
-  q.set('sort', sort);
-  q.set('limit', '120');
-  const { data, loading, refetch } = useApi<{ total: number; deals: Deal[] }>(`/deals?${q}`);
-  const dips = useApi<{ dips: Dip[] }>('/dips?limit=8');
+  const { data, loading, refetch } = useApi<{ total: number; deals: Deal[] }>(feedPath(params), { keepPrevious: true });
+  const dips = useApi<{ dips: Dip[] }>(DIPS_PATH);
 
   // New deal streamed in → refresh the grid (the server applies the filters).
   const [freshIds, setFreshIds] = useState<Set<number>>(new Set());
@@ -223,7 +235,9 @@ export function Home() {
 
       {atlas && deals.length > 0 && (
         <div style={{ marginBottom: 16 }}>
-          <WorldMap deals={deals} />
+          <Suspense fallback={<div className="skeleton" style={{ height: 360 }} />}>
+            <WorldMap deals={deals} />
+          </Suspense>
         </div>
       )}
 
@@ -235,8 +249,9 @@ export function Home() {
         </div>
       ) : deals.length ? (
         <div className="deal-grid">
-          {deals.map((d) => (
-            <DealCard key={d.id} deal={d} fresh={freshIds.has(d.id)} />
+          {deals.map((d, i) => (
+            // The first rows are above the fold: fetch their photos right away.
+            <DealCard key={d.id} deal={d} fresh={freshIds.has(d.id)} eager={i < 6} />
           ))}
         </div>
       ) : (
@@ -252,7 +267,7 @@ export function Home() {
           <div className="dips">
             {dips.data.dips.map((d) => (
               <a key={`${d.origin.code}${d.destination.code}`} className="dip" href={d.bookingUrl} target="_blank" rel="noreferrer">
-                {d.destination.image ? <CityImage src={d.destination.image} alt="" sizes="44px" /> : <div className="ph" />}
+                {d.destination.image ? <CityImage src={d.destination.image} alt="" sizes="44px" max={44} /> : <div className="ph" />}
                 <div style={{ minWidth: 0 }}>
                   <div className="t">
                     {d.origin.city} → {d.destination.city}

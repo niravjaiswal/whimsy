@@ -1,4 +1,4 @@
-import { GoTrueClient as AuthClient, type Session } from '@supabase/auth-js';
+import type { GoTrueClient as AuthClient, Session } from '@supabase/auth-js';
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { api, loadMeta, rememberedAlerts, setAccessToken, type Alert, type Deal } from './api';
 
@@ -54,7 +54,9 @@ export function AccountProvider({ children }: { children: ReactNode }) {
     loadMeta()
       .then(async (meta) => {
         if (!meta.auth) return setReady(true);
-        const c = new AuthClient({
+        // The auth client is big and only needed once the page is up: load it on demand.
+        const { GoTrueClient } = await import('@supabase/auth-js');
+        const c = new GoTrueClient({
           url: `${meta.auth.url}/auth/v1`,
           headers: { apikey: meta.auth.publishableKey },
           storageKey: 'whimsy-auth',

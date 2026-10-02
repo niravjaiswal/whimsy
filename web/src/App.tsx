@@ -1,18 +1,11 @@
-import { createContext, useContext, useEffect, useRef, useState } from 'react';
-import { Link, Route, Routes, useLocation } from 'react-router-dom';
+import { Suspense, createContext, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Link, Route, Routes, useLocation, useNavigationType } from 'react-router-dom';
 import { api, useLiveStream, type Deal, type ScanEvent, type Stats } from './api';
 import { Nav } from './components/Nav';
 import { Sky } from './components/Sky';
-import { AlertManage } from './pages/AlertManage';
 import { AccountProvider } from './account';
-import { Account } from './pages/Account';
-import { AlertNew } from './pages/AlertNew';
-import { SignIn } from './pages/SignIn';
-import { ConfirmEmail } from './pages/ConfirmEmail';
-import { DealPage } from './pages/DealPage';
 import { Home } from './pages/Home';
-import { MyAlerts } from './pages/MyAlerts';
-import { Scanner } from './pages/Scanner';
+import { AlertManage, AlertNew, Account, ConfirmEmail, DealPage, MyAlerts, Scanner, SignIn, preloadPages } from './pages/lazy';
 import { money, pct } from './format';
 
 type DealEvent = { kind: 'new' | 'dropped' | 'refreshed' | 'expired'; deal: Deal };
@@ -26,12 +19,45 @@ interface Live {
 const LiveContext = createContext<Live>({ stats: null, connected: false, scans: [], lastDealEvent: null });
 export const useLive = () => useContext(LiveContext);
 
-function ScrollToTop() {
-  const { pathname } = useLocation();
+/**
+ * New pages start at the top; Back/Forward returns to where you were. The data
+ * cache (api.ts) means the page is full height on the first render, so the
+ * position can be restored before paint.
+ */
+const scrollPositions = new Map<string, number>();
+function ScrollManager() {
+  const location = useLocation();
+  const navType = useNavigationType();
+  const key = useRef(location.key);
+  const lastPath = useRef(location.pathname);
+  if (key.current !== location.key) {
+    // Rendering the next page, before its DOM lands: the old page's offset is still live.
+    scrollPositions.set(key.current, window.scrollY);
+    key.current = location.key;
+  }
   useEffect(() => {
-    window.scrollTo(0, 0);
-  }, [pathname]);
+    if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
+    const onScroll = () => scrollPositions.set(key.current, window.scrollY);
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => window.removeEventListener('scroll', onScroll);
+  }, []);
+  useLayoutEffect(() => {
+    const samePage = lastPath.current === location.pathname;
+    lastPath.current = location.pathname;
+    if (navType === 'POP') window.scrollTo(0, scrollPositions.get(location.key) ?? 0);
+    // A REPLACE on the same page is a filter tweak: stay put.
+    else if (navType === 'PUSH' || !samePage) window.scrollTo(0, 0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.key]);
   return null;
+}
+
+function PageFallback() {
+  return (
+    <div className="container">
+      <div className="skeleton" style={{ height: 340, marginTop: 16, borderRadius: 30 }} />
+    </div>
+  );
 }
 
 function DealToast({ ev, onClose }: { ev: DealEvent; onClose: () => void }) {
@@ -66,6 +92,7 @@ export function App() {
     api<Stats>('/stats').then(setStats).catch(() => {});
   }, []);
 
+  useEffect(preloadPages, []);
   const connected = useLiveStream({
     stats: setStats,
     scan: (e) => {
@@ -84,11 +111,12 @@ export function App() {
   return (
     <AccountProvider>
     <LiveContext.Provider value={{ stats, connected, scans, lastDealEvent }}>
-      <ScrollToTop />
+      <ScrollManager />
       <Sky dim={dim} />
       <div className="shell">
         <Nav stats={stats} connected={connected} />
         <main>
+          <Suspense fallback={<PageFallback />}>
           <Routes>
             <Route path="/" element={<Home />} />
             <Route path="/deal/:slug" element={<DealPage />} />
@@ -113,6 +141,7 @@ export function App() {
               }
             />
           </Routes>
+          </Suspense>
         </main>
         <footer className="footer">
           <div className="container">
