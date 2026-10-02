@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
+import { useAccount } from '../account';
 import { api, rememberAlert, useMeta, type Alert, type Region } from '../api';
 import { AlertForm, draftToPayload, type AlertDraft } from '../components/AlertForm';
 import { whenFromParams } from '../components/WhenPicker';
@@ -10,9 +11,10 @@ export function AlertNew() {
   const [created, setCreated] = useState<Alert | null>(null);
   const list = (k: string) => params.get(k)?.split(',').filter(Boolean) ?? [];
 
+  const account = useAccount();
   const initial: AlertDraft = {
     name: '',
-    email: '',
+    email: account.session?.user.email ?? '',
     origins: list('from'),
     regions: list('to') as Region[],
     destinations: list('dest'),
@@ -20,7 +22,8 @@ export function AlertNew() {
     minTier: 'good',
     ...whenFromParams(params),
     frequency: 'instant',
-    channels: { email: false, push: false, ntfy: '', webhook: '' },
+    // Signed in: your (already confirmed) email is the natural default channel.
+    channels: { email: !!account.session?.user.email && !!meta?.emailEnabled, push: false, ntfy: '', webhook: '' },
   };
 
   if (created) return <Created alert={created} />;
@@ -31,7 +34,7 @@ export function AlertNew() {
         <h1 style={{ fontSize: 'clamp(32px,4.6vw,50px)' }}>Tell us the vibe. We’ll watch the fares.</h1>
         <p className="lede">No route required. Set loose filters and we’ll ping you the moment something great lands.</p>
       </section>
-      {meta ? (
+      {meta && account.ready ? (
         <AlertForm
           meta={meta}
           initial={initial}
@@ -54,6 +57,7 @@ export function AlertNew() {
 }
 
 function Created({ alert }: { alert: Alert }) {
+  const signedIn = !!useAccount().session;
   const [copied, setCopied] = useState(false);
   const [test, setTest] = useState<Record<string, string> | null>(null);
   const [testErr, setTestErr] = useState('');
@@ -62,7 +66,7 @@ function Created({ alert }: { alert: Alert }) {
       <div className="panel" style={{ marginTop: 40, textAlign: 'center', padding: 36 }}>
         <div style={{ fontSize: 44 }}>🛫</div>
         <h2 style={{ fontWeight: 400, fontSize: 30, letterSpacing: '-0.02em', margin: '8px 0 8px' }}>You’re on the list.</h2>
-        {alert.email && alert.channels.email && (
+        {alert.email && alert.channels.email && !alert.emailVerified && (
           <p className="pill" style={{ margin: '0 auto 16px', display: 'inline-flex' }}>
             📬 Check {alert.email} and click the confirmation link to turn on email alerts
           </p>
@@ -72,7 +76,7 @@ function Created({ alert }: { alert: Alert }) {
           {alert.frequency === 'daily' ? ' in your daily digest' : ' right away'}.
         </p>
         <div className="muted" style={{ fontSize: 13, marginBottom: 8 }}>
-          Your private manage link — save it, it’s the only key
+          {signedIn ? 'Saved to your account. Private manage link:' : 'Your private manage link — save it, it’s the only key'}
         </div>
         <div className="code-box">{alert.manageUrl}</div>
         <div className="row" style={{ justifyContent: 'center', marginTop: 18 }}>

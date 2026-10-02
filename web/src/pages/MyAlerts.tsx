@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
+import { useAccount } from '../account';
 import { api, rememberedAlerts, useMeta, type Alert } from '../api';
 import { REGION_EMOJI, money } from '../format';
 import { isAnyWhen, whenSummary } from '../components/WhenPicker';
@@ -18,16 +19,21 @@ export function MyAlerts() {
   const [sent, setSent] = useState(false);
   const [err, setErr] = useState('');
 
+  const account = useAccount();
   useEffect(() => {
-    const tokens = rememberedAlerts();
+    if (!account.ready) return;
+    // Signed in: the account is the source of truth (plus anything this browser
+    // still holds that belongs to someone else's link).
+    const owned = account.me?.alerts ?? [];
+    const tokens = rememberedAlerts().filter((t) => !owned.some((a) => a.token === t.token));
     Promise.all(
       tokens.map((t) =>
         api<{ alert: Alert }>(`/alerts/${t.token}`)
           .then((r) => r.alert)
           .catch(() => null),
       ),
-    ).then((xs) => setAlerts(xs.filter((x): x is Alert => !!x)));
-  }, []);
+    ).then((xs) => setAlerts([...owned, ...xs.filter((x): x is Alert => !!x)]));
+  }, [account.ready, account.me]);
 
   return (
     <div className="container" style={{ maxWidth: 760, paddingBottom: 60 }}>
@@ -67,7 +73,19 @@ export function MyAlerts() {
         )}
       </div>
 
-      {meta?.emailEnabled && (
+      {account.enabled && !account.session && (
+        <div className="panel" style={{ marginTop: 16 }}>
+          <div style={{ fontSize: 15 }}>Keep your alerts on every device</div>
+          <p className="muted" style={{ fontSize: 14, margin: '4px 0 12px', lineHeight: 1.5 }}>
+            Sign in with your email and the alerts above move into your account — no more hunting for manage links.
+          </p>
+          <Link to="/signin?next=/alerts" className="btn btn-ghost btn-sm">
+            Sign in
+          </Link>
+        </div>
+      )}
+
+      {meta?.emailEnabled && !account.session && (
       <div className="panel" style={{ marginTop: 16 }}>
         <div style={{ fontSize: 15 }}>Lost a manage link?</div>
         <p className="muted" style={{ fontSize: 14, margin: '4px 0 12px' }}>

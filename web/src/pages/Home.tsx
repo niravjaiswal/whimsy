@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useLive } from '../App';
+import { useAccount } from '../account';
 import { useApi, useMeta, type Deal, type Dip, type Region, type ScanEvent, type Tier } from '../api';
 import { CityImage, DealCard } from '../components/DealCard';
 import { AirportList, Field, RegionList, summarize } from '../components/Pickers';
@@ -52,6 +53,23 @@ export function Home() {
   const nav = useNavigate();
   const { scans, lastDealEvent, stats } = useLive();
   const [params, setParams] = useSearchParams();
+  const account = useAccount();
+  // Signed-in travellers start filtered to their home airports — once per session,
+  // and never over an explicit filter in the URL.
+  useEffect(() => {
+    const homes = account.me?.profile.homeAirports ?? [];
+    if (!homes.length || params.has('from')) return;
+    try {
+      if (sessionStorage.getItem('whimsy:homeDefaultApplied')) return;
+      sessionStorage.setItem('whimsy:homeDefaultApplied', '1');
+    } catch {
+      return;
+    }
+    const next = new URLSearchParams(params);
+    next.set('from', homes.join(','));
+    setParams(next, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [account.me]);
   const origins = params.get('from')?.split(',').filter(Boolean) ?? [];
   const regions = (params.get('to')?.split(',').filter(Boolean) ?? []) as Region[];
   const when = whenFromParams(params);

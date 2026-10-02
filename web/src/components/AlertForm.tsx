@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useAccount } from '../account';
 import { api, pushSupported, subscribePush, type Alert, type Deal, type Meta, type Region, type Tier } from '../api';
 import { REGION_EMOJI, money } from '../format';
 import { MiniDeal } from './DealCard';
@@ -102,6 +103,7 @@ export function AlertForm({
   footer?: React.ReactNode;
 }) {
   const [d, setD] = useState<AlertDraft>(initial);
+  const accountEmail = useAccount().session?.user.email?.toLowerCase() ?? null;
   const [pushSub, setPushSub] = useState<PushSubscriptionJSON | null>(null);
   const [pushState, setPushState] = useState<'idle' | 'asking' | 'error'>('idle');
   const [pushErr, setPushErr] = useState('');
@@ -280,7 +282,11 @@ export function AlertForm({
                 <span>Email</span>
                 <span className={`toggle ${d.channels.email ? 'on' : ''}`} role="switch" aria-checked={d.channels.email} tabIndex={0} onClick={() => ch({ email: !d.channels.email })} onKeyDown={(e) => e.key === ' ' && ch({ email: !d.channels.email })} />
               </div>
-              <p className="desc">A clean email with the fare, dates and a booking link. Also how you recover your alerts later.</p>
+              <p className="desc">
+                {accountEmail && d.email.trim().toLowerCase() === accountEmail
+                  ? 'Your account email — already confirmed, deals start right away.'
+                  : 'A clean email with the fare, dates and a booking link. New addresses get a one-click confirmation first.'}
+              </p>
               <input className="input" type="email" placeholder="you@example.com" value={d.email} onChange={(e) => (up({ email: e.target.value }), e.target.value && !d.channels.email && ch({ email: true }))} />
             </div>
           </div>
