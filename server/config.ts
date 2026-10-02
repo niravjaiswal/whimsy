@@ -25,6 +25,10 @@ export const config = {
   vapidSubject: process.env.VAPID_SUBJECT ?? 'mailto:deals@whimsy.local',
   vapidPublicKey: process.env.VAPID_PUBLIC_KEY,
   vapidPrivateKey: process.env.VAPID_PRIVATE_KEY,
+  /** Optional accounts (Supabase Auth). All three must be set to enable sign-in. */
+  supabaseUrl: process.env.SUPABASE_URL,
+  supabasePublishableKey: process.env.SUPABASE_PUBLISHABLE_KEY,
+  supabaseServiceKey: process.env.SUPABASE_SERVICE_ROLE_KEY,
   notifyFlushMs: num(process.env.NOTIFY_FLUSH_MS, 60_000),
   /** Allow webhooks to private/loopback addresses (tests & local dev only). */
   allowPrivateWebhooks: process.env.ALLOW_PRIVATE_WEBHOOKS === '1',
