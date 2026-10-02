@@ -161,6 +161,8 @@ export interface Meta {
   regions: { id: Region; label: string }[];
   vapidPublicKey: string;
   emailEnabled: boolean;
+  /** Supabase auth client config; null when accounts are off on this server. */
+  auth: { url: string; publishableKey: string } | null;
 }
 
 /**
@@ -178,10 +180,20 @@ export class ApiError extends Error {
   }
 }
 
+/** Current Supabase access token, kept up to date by the account provider. */
+let accessToken: string | null = null;
+export const setAccessToken = (t: string | null) => {
+  accessToken = t;
+};
+
 export async function api<T>(path: string, init?: RequestInit & { json?: unknown }): Promise<T> {
   const res = await fetch(`${API_BASE}/api${path}`, {
     ...init,
-    headers: { ...(init?.json !== undefined ? { 'content-type': 'application/json' } : {}), ...init?.headers },
+    headers: {
+      ...(init?.json !== undefined ? { 'content-type': 'application/json' } : {}),
+      ...(accessToken ? { authorization: `Bearer ${accessToken}` } : {}),
+      ...init?.headers,
+    },
     body: init?.json !== undefined ? JSON.stringify(init.json) : init?.body,
   });
   const data = await res.json().catch(() => ({}));
