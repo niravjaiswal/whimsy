@@ -11,10 +11,13 @@ export const config = {
   origins: process.env.ORIGINS?.split(',').map((s) => s.trim().toUpperCase()).filter(Boolean),
   smtpUrl: process.env.SMTP_URL,
   /**
-   * Email alerts need a real mail server in production. Without SMTP_URL, dev
-   * keeps emails in the outbox table; production hides the email channel.
+   * Email alerts need a real transport in production (AgentMail or SMTP). Without
+   * one, dev keeps emails in the outbox table and production hides the channel.
    */
-  emailEnabled: !!process.env.SMTP_URL || process.env.NODE_ENV !== 'production',
+  emailEnabled: !!(process.env.AGENTMAIL_API_KEY || process.env.SMTP_URL) || process.env.NODE_ENV !== 'production',
+  /** AgentMail (https://agentmail.to) API transport; preferred over SMTP when set. */
+  agentmailApiKey: process.env.AGENTMAIL_API_KEY,
+  agentmailInbox: process.env.AGENTMAIL_INBOX ?? 'whimsy@agentmail.to',
   /** Browser origins allowed to call the API (e.g. the Vercel frontend). */
   corsOrigins: (process.env.CORS_ORIGINS ?? '').split(',').map((s) => s.trim().replace(/\/$/, '')).filter(Boolean),
   emailFrom: process.env.EMAIL_FROM ?? 'Whimsy <deals@whimsy.local>',

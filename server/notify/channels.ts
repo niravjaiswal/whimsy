@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import dns from 'node:dns/promises';
 import net from 'node:net';
 import nodemailer, { type Transporter } from 'nodemailer';
@@ -88,16 +89,59 @@ export function renderEmail(msg: Message & { manageUrl: string }): { html: strin
   return { html, text };
 }
 
-export async function sendEmail(db: DB, to: string, msg: Message & { manageUrl: string }): Promise<void> {
-  const { html, text } = renderEmail(msg);
-  const subject = msg.title.replace(/^✈\s*/, '');
+export interface OutgoingEmail {
+  to: string;
+  subject: string;
+  html: string;
+  text: string;
+  /** Makes retries safe: AgentMail drops a second send with the same key. */
+  idempotencyKey?: string;
+}
+
+async function sendViaAgentMail(mail: OutgoingEmail): Promise<void> {
+  // A stable idempotency key makes the single retry below safe: AgentMail drops duplicates.
+  const key = mail.idempotencyKey ?? crypto.randomUUID();
+  let lastErr: Error | null = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const res = await fetch(`https://api.agentmail.to/v0/inboxes/${encodeURIComponent(config.agentmailInbox)}/messages/send`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${config.agentmailApiKey}`, 'content-type': 'application/json', 'idempotency-key': key },
+        body: JSON.stringify({ to: [mail.to], subject: mail.subject, text: mail.text, html: mail.html, labels: ['whimsy'] }),
+        signal: AbortSignal.timeout(30_000),
+      });
+      if (res.ok) return;
+      lastErr = new Error(`AgentMail HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
+      if (res.status < 500 && res.status !== 429) throw lastErr; // client error: retrying won't help
+    } catch (err) {
+      lastErr = err as Error;
+      if (/AgentMail HTTP 4(?!29)/.test(lastErr.message)) throw lastErr;
+    }
+  }
+  throw lastErr!;
+}
+
+/** Send through AgentMail, else SMTP, else (dev) park it in the outbox table. */
+export async function deliverEmail(db: DB, mail: OutgoingEmail): Promise<void> {
+  if (config.agentmailApiKey) return sendViaAgentMail(mail);
   const t = getTransport();
-  if (!t) {
-    // No SMTP configured: keep it in the outbox so it's visible at /api/dev/outbox.
-    (await db.run('INSERT INTO outbox (recipient, subject, html, text, created_at) VALUES (?, ?, ?, ?, ?)', to, subject, html, text, Date.now()));
+  if (t) {
+    await t.sendMail({ from: config.emailFrom, to: mail.to, subject: mail.subject, html: mail.html, text: mail.text });
     return;
   }
-  await t.sendMail({ from: config.emailFrom, to, subject, html, text });
+  await db.run(
+    'INSERT INTO outbox (recipient, subject, html, text, created_at) VALUES (?, ?, ?, ?, ?)',
+    mail.to,
+    mail.subject,
+    mail.html,
+    mail.text,
+    Date.now(),
+  );
+}
+
+export async function sendEmail(db: DB, to: string, msg: Message & { manageUrl: string }, idempotencyKey?: string): Promise<void> {
+  const { html, text } = renderEmail(msg);
+  await deliverEmail(db, { to, subject: msg.title.replace(/^✈\s*/, ''), html, text, idempotencyKey });
 }
 
 // ── web push ───────────────────────────────────────────────────────────────
