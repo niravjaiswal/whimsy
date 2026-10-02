@@ -11,13 +11,10 @@
     },
     {
       "name": "web-prodapi",
-      "runtimeExecutable": "env",
+      "runtimeExecutable": "sh",
       "runtimeArgs": [
-        "API_PROXY=https://<your-api-host>",
-        "npx",
-        "vite",
-        "--port",
-        "5174"
+        "-c",
+        "API_PROXY=\"${API_PROXY:?set API_PROXY to the deployed API origin}\" npx vite --port 5174"
       ],
       "port": 5174
     }

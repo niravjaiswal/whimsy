@@ -35,10 +35,10 @@ WASM, stored in `data/pglite`), so there's nothing else to install. Set
 | Piece | Where | What |
 |---|---|---|
 | Frontend | **Vercel** — https://whimsy-gamma.vercel.app | Static Vite build (`vercel.json`); `VITE_API_URL` points at the API |
-| API + scanner + notifier | **Railway** — https://<your-api-host> | One long-running container (`Dockerfile`, `railway.json`, health check `/api/health`) |
-| Database | **Supabase** Postgres (project `<project-ref>`) | Schema in `supabase/migrations`; RLS on, Data API locked out |
+| API + scanner + notifier | **Railway** | One long-running container (`Dockerfile`, `railway.json`, health check `/api/health`) |
+| Database | **Supabase** Postgres | Schema in `supabase/migrations`; RLS on, Data API locked out |
 
-Deploying changes: **push to `main`** on GitHub. Railway rebuilds
+Deploying changes: **push to `main`**. Railway rebuilds
 the API and Vercel rebuilds the frontend automatically. Database migrations are the one
 manual step:
 
@@ -107,3 +107,7 @@ Fares come from Google Flights' public search pages. Scraping them is against Go
 Service, so treat this as a prototype or personal tool. It runs at a low, rate-limited request
 rate with backoff. For a commercial launch, put a licensed fare API (Duffel, Amadeus Enterprise,
 Travelport, etc.) behind the `FareProvider` interface in `server/providers/types.ts`.
+
+## License
+
+[MIT](LICENSE)

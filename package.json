@@ -2,6 +2,7 @@
   "name": "whimsy",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "description": "Always-on flight deal scanner across every route. Cheap flights to wherever.",
   "engines": {
