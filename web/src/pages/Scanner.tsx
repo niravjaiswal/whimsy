@@ -156,12 +156,12 @@ export function Scanner() {
           <div className="step">
             <div className="n">↓</div>
             <h3>Below the typical range</h3>
-            <p>A fare must be 20%+ under baseline and at or below the bottom of the typical range. Routes that are always cheap don’t count.</p>
+            <p>A fare must be 40%+ under baseline, at least 15% under the bottom of Google’s typical range, and save $60+. Routes that are always cheap don’t count.</p>
           </div>
           <div className="step">
             <div className="n">✦</div>
             <h3>Good, great, incredible</h3>
-            <p>20%+ off is good, 35%+ great, 50%+ incredible. Deals are re-verified every few hours and vanish when the price recovers.</p>
+            <p>40%+ off is good, 50%+ great, 60%+ incredible. Deals are re-verified every few hours and vanish when the price recovers.</p>
           </div>
         </div>
       </section>

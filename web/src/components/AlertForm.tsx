@@ -62,9 +62,9 @@ export function draftToPayload(d: AlertDraft) {
 }
 
 const TIERS: { id: Tier; label: string; hint: string }[] = [
-  { id: 'good', label: 'Good', hint: '20%+ off' },
-  { id: 'great', label: 'Great', hint: '35%+ off' },
-  { id: 'incredible', label: 'Incredible', hint: '50%+ off' },
+  { id: 'good', label: 'Good', hint: '40%+ off' },
+  { id: 'great', label: 'Great', hint: '50%+ off' },
+  { id: 'incredible', label: 'Incredible', hint: '60%+ off' },
 ];
 
 function CityPicker({ meta, selected, onChange }: { meta: Meta; selected: string[]; onChange: (c: string[]) => void }) {

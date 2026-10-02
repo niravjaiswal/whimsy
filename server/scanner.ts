@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import type { DB } from './db.js';
-import { recordResult, sweepStaleDeals, type DealEvent, type DealRow } from './deals.js';
+import { recordResult, regradeActiveDeals, sweepStaleDeals, type DealEvent, type DealRow } from './deals.js';
 import { sampleDates, tripLengths, type RouteRow } from './routes.js';
 import { rowToAlert } from './alerts.js';
 import { AIRPORTS } from './airports.js';
@@ -295,7 +295,8 @@ export class Scanner extends EventEmitter<{ scan: [ScanEvent]; deal: [DealEvent]
 
   /** Housekeeping: expire stale deals, trim old logs. */
   async maintain(now = Date.now()) {
-    const expired = await sweepStaleDeals(this.db, now);
+    const regraded = await regradeActiveDeals(this.db, now);
+    const expired = (await sweepStaleDeals(this.db, now)) + regraded.expired;
     (await this.db.run('DELETE FROM scans WHERE created_at < ?', now - 7 * 86400_000));
     (await this.db.run('DELETE FROM observations WHERE observed_at < ?', now - 120 * 86400_000));
     return { expired };

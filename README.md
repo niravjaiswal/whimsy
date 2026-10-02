@@ -8,8 +8,8 @@ it's going.
   departure dates from 3 weeks to 7 months out, with trip lengths that fit the distance.
 - **Real fares**: live Google Flights results, including Google's "typical price" range and 60-day
   price history for each search.
-- **Deal detection**: a fare counts as a deal when it's **≥20% below baseline _and_ at or under the
-  typical-low price**. Tiers are *good* (20%+), *great* (35%+) and *incredible* (50%+). Deals are
+- **Deal detection**: a fare counts as a deal when it's **≥40% below baseline, ≥15% under Google's
+  typical-low price, and $60+ saved**. Tiers are *good* (40%+), *great* (50%+) and *incredible* (60%+). Deals are
   re-checked every 6h and expire once the price recovers. When a deal is found, the scanner also
   checks nearby dates, because cheap fares tend to cluster.
 - **Alerts without a route**: pick origins (or any), regions or cities (or anywhere), months, max

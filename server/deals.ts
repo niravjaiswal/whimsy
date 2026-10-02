@@ -6,7 +6,25 @@ export type Tier = 'good' | 'great' | 'incredible';
 export const TIER_RANK: Record<Tier, number> = { good: 1, great: 2, incredible: 3 };
 export const TIERS: Tier[] = ['good', 'great', 'incredible'];
 
-export const THRESHOLDS = { good: 0.2, great: 0.35, incredible: 0.5 } as const;
+/*
+ * Bar for a "deal", tuned on ~80k real observations (Sept 2026): Google itself
+ * rates ~28% of searched fares as "low", so being under typical isn't enough.
+ * Good ≈ 6% of fares, great ≈ 2%, incredible ≈ 0.5%.
+ */
+export const THRESHOLDS = { good: 0.4, great: 0.5, incredible: 0.6 } as const;
+/** Must also beat Google's typical-low bound by this factor… */
+export const LOW_MARGIN = 0.85;
+/** …and save real money (a 40% drop on a $90 hop isn't news). */
+export const MIN_SAVINGS = 60;
+
+/** Apply the bar to a scored fare. Used at scan time and to re-grade stored deals. */
+export function qualifyingTier(price: number, baseline: number, discount: number, typicalLow: number | null): Tier | null {
+  const tier = tierFor(discount);
+  if (!tier) return null;
+  if (baseline - price < MIN_SAVINGS) return null;
+  if (typicalLow != null && price > typicalLow * LOW_MARGIN) return null;
+  return tier;
+}
 
 /** Minimum own observations before we trust our own median. */
 const MIN_OWN_SAMPLES = 5;
@@ -43,7 +61,7 @@ export function tierFor(discount: number): Tier | null {
  * Baseline = what this trip normally costs. We lean on Google's "typical price"
  * for the exact search, sanity-checked against the 60-day price history for that
  * search and our own observations of the route. A deal must beat the baseline by
- * ≥20% *and* sit at or below Google's typical-low bound when one exists — this
+ * ≥40% *and* sit well under Google's typical-low bound when one exists — this
  * stops "cheap-looking" fares on routes that are always cheap from firing.
  */
 export function scoreFare(price: number, insight: PriceInsight | null, own: OwnStats, distance: number): Score | null {
@@ -61,8 +79,7 @@ export function scoreFare(price: number, insight: PriceInsight | null, own: OwnS
   if (baseline <= 0 || price < 15) return null;
 
   const discount = Math.max(0, 1 - price / baseline);
-  let tier = tierFor(discount);
-  if (tier && insight?.typicalLow && price > insight.typicalLow) tier = null;
+  const tier = qualifyingTier(price, baseline, discount, insight?.typicalLow ?? null);
 
   // Score rewards depth of discount, with a bump for long-haul adventures
   // (a 40% drop to Tokyo is more exciting than 40% off a 90-minute hop).
@@ -201,4 +218,27 @@ export async function sweepStaleDeals(db: DB, now = Date.now(), maxUnverifiedMs 
   const res = (await db.run(`UPDATE deals SET status = 'expired', expired_at = ?, updated_at = ?
        WHERE status = 'active' AND (depart_date <= ? OR verified_at < ?)`, now, now, tomorrow, now - maxUnverifiedMs));
   return Number(res.changes);
+}
+
+/**
+ * Re-grade active deals against the current bar (thresholds change over time):
+ * expire the ones that no longer qualify, fix tiers on the rest.
+ */
+export async function regradeActiveDeals(db: DB, now = Date.now()): Promise<{ expired: number; retiered: number }> {
+  const deals = await db.all<Pick<DealRow, 'id' | 'price' | 'baseline' | 'discount' | 'typical_low' | 'tier'>>(
+    "SELECT id, price, baseline, discount, typical_low, tier FROM deals WHERE status = 'active'",
+  );
+  let expired = 0;
+  let retiered = 0;
+  for (const d of deals) {
+    const tier = qualifyingTier(d.price, d.baseline, d.discount, d.typical_low);
+    if (!tier) {
+      await db.run("UPDATE deals SET status = 'expired', expired_at = ?, updated_at = ? WHERE id = ?", now, now, d.id);
+      expired++;
+    } else if (tier !== d.tier) {
+      await db.run('UPDATE deals SET tier = ? WHERE id = ?', tier, d.id);
+      retiered++;
+    }
+  }
+  return { expired, retiered };
 }

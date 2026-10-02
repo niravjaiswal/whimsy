@@ -272,7 +272,7 @@ export function Home() {
           <div className="step">
             <div className="n">3</div>
             <h3>You get pinged</h3>
-            <p>When a fare drops 20%+ below normal and matches your vibe, we notify you by push, email, ntfy or Discord/Slack.</p>
+            <p>When a fare drops 40%+ below normal and matches your vibe, we notify you by push, email, ntfy or Discord/Slack.</p>
           </div>
         </div>
       </section>
@@ -289,7 +289,7 @@ function EmptyDeals({ filtered, alertHref }: { filtered: boolean; alertHref: str
       <p>
         {filtered
           ? 'Deals come and go by the hour. Set an alert with these filters and we’ll ping you the moment one lands.'
-          : `We’ve checked ${num(stats?.totalScans ?? 0)} fares so far. Real deals are rare by design — only fares 20%+ below normal make the cut.`}
+          : `We’ve checked ${num(stats?.totalScans ?? 0)} fares so far. Real deals are rare by design — only fares 40%+ below normal make the cut.`}
       </p>
       <div className="row" style={{ justifyContent: 'center', marginTop: 18 }}>
         <Link to={alertHref} className="btn btn-primary btn-sm">

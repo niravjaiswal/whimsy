@@ -68,7 +68,7 @@ function Created({ alert }: { alert: Alert }) {
           </p>
         )}
         <p className="text-2" style={{ lineHeight: 1.5, margin: '0 auto 22px', maxWidth: 440 }}>
-          We’re watching every route that matches. When a fare drops 20%+ below normal, you’ll hear about it
+          We’re watching every route that matches. When a fare drops 40%+ below normal, you’ll hear about it
           {alert.frequency === 'daily' ? ' in your daily digest' : ' right away'}.
         </p>
         <div className="muted" style={{ fontSize: 13, marginBottom: 8 }}>

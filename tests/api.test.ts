@@ -24,14 +24,14 @@ describe('api', () => {
   it('lists and filters deals', async () => {
     const { db, json } = await setup();
     await recordResult(db, await addRoute(db), fare({ price: 400 }));
-    await recordResult(db, await addRoute(db, 'ORD', 'NRT', 6300), fare({ origin: 'ORD', destination: 'NRT', price: 560, typical: 800 }));
+    await recordResult(db, await addRoute(db, 'ORD', 'NRT', 6300), fare({ origin: 'ORD', destination: 'NRT', price: 460, typical: 800 }));
     const all = await (await json('/deals')).json();
     expect(all.total).toBe(2);
     expect(all.deals[0].destination).toMatchObject({ code: expect.any(String), city: expect.any(String) });
     expect((await (await json('/deals?region=asia')).json()).total).toBe(1);
     expect((await (await json('/deals?origin=DTW')).json()).deals[0].destination.city).toBe('Lisbon');
     expect((await (await json('/deals?maxPrice=450')).json()).total).toBe(1);
-    expect((await (await json('/deals?tier=incredible')).json()).total).toBe(1);
+    expect((await (await json('/deals?tier=great')).json()).total).toBe(1);
     expect((await (await json('/deals?departFrom=2026-11-10&departTo=2026-11-10')).json()).total).toBe(2);
     expect((await (await json('/deals?departFrom=2026-11-11&departTo=2026-11-20')).json()).total).toBe(0);
     expect((await (await json('/deals?minNights=2&maxNights=4')).json()).total).toBe(0);
@@ -46,7 +46,7 @@ describe('api', () => {
     await recordResult(db, await addRoute(db), fare({ price: 400 }));
     await recordResult(db, await addRoute(db, 'ORD', 'LIS'), fare({ origin: 'ORD', price: 420 }));
     const r = await (await json('/deals/dtw-lis-2026-11-10-2026-11-17')).json();
-    expect(r.deal).toMatchObject({ price: 400, nights: 7, tier: 'incredible', via: ['EWR'] });
+    expect(r.deal).toMatchObject({ price: 400, nights: 7, tier: 'great', via: ['EWR'] });
     expect(r.deal.history.length).toBe(30);
     expect(r.related[0].origin.code).toBe('ORD');
     expect((await json('/deals/nope')).status).toBe(404);
