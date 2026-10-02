@@ -7,6 +7,7 @@ export default defineConfig({
   build: { outDir: '../dist', emptyOutDir: true },
   server: {
     port: 5173,
-    proxy: { '/api': { target: 'http://localhost:8787', changeOrigin: true } },
+    // API_PROXY lets the dev UI run against a deployed backend.
+    proxy: { '/api': { target: process.env.API_PROXY ?? 'http://localhost:8787', changeOrigin: true } },
   },
 });

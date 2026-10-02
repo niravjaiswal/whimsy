@@ -49,3 +49,35 @@ rounded result cards).
 
 `npm run build && npm start` → one process (API + scanner + static). Dockerfile
 included. Needs a long-running host (Fly/Railway/VPS) — not serverless.
+
+## Front-end performance (2026-10-02)
+
+Scrolling the feed used to show empty tiles for a beat. Causes and fixes:
+
+- **Images.** Tiles hot-linked 960px Wikimedia JPEGs (100–260 KB each) into a
+  128px-tall slot; mini rows pulled the same files for 44px thumbnails. In
+  production every city photo now goes through Vercel's image optimizer
+  (`/_vercel/image`, configured under `images` in `vercel.json`, enabled by
+  `VITE_IMAGE_OPTIMIZER=1` in the Vercel build). It serves same-origin,
+  edge-cached AVIF/WebP at the slot's 1x/2x width (`web/src/img.ts`). Widths and
+  quality must stay in sync with `vercel.json`. The Hobby plan's monthly
+  transformation quota is far above what ~150 cities × a few widths need, and
+  `minimumCacheTTL` is 31 days. Dev and self-hosted builds fall back to
+  Wikimedia's standard thumbnail widths.
+- **Paint.** The first six cards load eagerly; photos fade in once decoded.
+  Hovering a card prefetches the deal page's data and hero.
+- **Scroll cost.** The fixed sky animated SVG groups that carry
+  feTurbulence/displacement filters, so Chrome re-ran those filters every
+  frame. Each cloud band is now its own composited layer that moves as a
+  finished bitmap. Badges inside cards no longer use `backdrop-filter`.
+- **Data.** `useApi` keeps an in-memory stale-while-revalidate cache with
+  shared in-flight requests. Back navigation renders instantly, and
+  `ScrollManager` restores the scroll position. `main.tsx` starts the feed
+  request before React renders.
+- **API.** `/deals` skips the `history` column, which only the deal page
+  chart uses (about 35% of the payload). `/deals` and `/dips` are served from a
+  20s in-memory snapshot that scanner deal events clear (`feedCacheMs`).
+  `/meta` is browser-cacheable for 5 minutes.
+- **Bundle.** Non-landing pages, the Atlas map (d3-geo) and the Supabase auth
+  client are lazy chunks, warmed when the browser is idle. Initial JS went from
+  529 KB to about 300 KB.

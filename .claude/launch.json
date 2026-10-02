@@ -1,6 +1,25 @@
 {
   "version": "0.0.1",
   "configurations": [
-    { "name": "web", "runtimeExecutable": "npx", "runtimeArgs": ["vite"], "port": 5173 }
+    {
+      "name": "web",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "vite"
+      ],
+      "port": 5173
+    },
+    {
+      "name": "web-prodapi",
+      "runtimeExecutable": "env",
+      "runtimeArgs": [
+        "API_PROXY=https://<your-api-host>",
+        "npx",
+        "vite",
+        "--port",
+        "5174"
+      ],
+      "port": 5174
+    }
   ]
 }
