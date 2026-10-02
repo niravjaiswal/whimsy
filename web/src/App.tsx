@@ -4,7 +4,10 @@ import { api, useLiveStream, type Deal, type ScanEvent, type Stats } from './api
 import { Nav } from './components/Nav';
 import { Sky } from './components/Sky';
 import { AlertManage } from './pages/AlertManage';
+import { AccountProvider } from './account';
+import { Account } from './pages/Account';
 import { AlertNew } from './pages/AlertNew';
+import { SignIn } from './pages/SignIn';
 import { ConfirmEmail } from './pages/ConfirmEmail';
 import { DealPage } from './pages/DealPage';
 import { Home } from './pages/Home';
@@ -79,6 +82,7 @@ export function App() {
 
   const dim = loc.pathname !== '/';
   return (
+    <AccountProvider>
     <LiveContext.Provider value={{ stats, connected, scans, lastDealEvent }}>
       <ScrollToTop />
       <Sky dim={dim} />
@@ -92,6 +96,8 @@ export function App() {
             <Route path="/alerts/new" element={<AlertNew />} />
             <Route path="/alerts/:token" element={<AlertManage />} />
             <Route path="/scanner" element={<Scanner />} />
+            <Route path="/signin" element={<SignIn />} />
+            <Route path="/account" element={<Account />} />
             <Route path="/confirm/:token" element={<ConfirmEmail />} />
             <Route
               path="*"
@@ -119,5 +125,6 @@ export function App() {
       </div>
       {toast && loc.pathname !== `/deal/${toast.deal.slug}` && <DealToast ev={toast} onClose={() => setToast(null)} />}
     </LiveContext.Provider>
+    </AccountProvider>
   );
 }

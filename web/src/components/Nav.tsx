@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link, NavLink } from 'react-router-dom';
+import { useAccount } from '../account';
 import type { Stats } from '../api';
 import { num } from '../format';
 
@@ -43,10 +44,29 @@ export function Nav({ stats, connected }: { stats: Stats | null; connected: bool
             My alerts
           </NavLink>
         </nav>
+        <AccountLink />
         <Link to="/alerts/new" className="btn btn-primary btn-sm">
           Get alerts
         </Link>
       </div>
     </header>
+  );
+}
+
+/** Birds Eye-style "Sign in ›" pill, or your initial once signed in. */
+function AccountLink() {
+  const account = useAccount();
+  if (!account.enabled || !account.ready) return null;
+  if (!account.session)
+    return (
+      <Link to="/signin" className="pill pill-sm signin-pill">
+        Sign in <span className="chev">›</span>
+      </Link>
+    );
+  const email = account.session.user.email ?? '';
+  return (
+    <Link to="/account" className="avatar" title={email} aria-label="Your account">
+      {email.slice(0, 1).toUpperCase() || '•'}
+    </Link>
   );
 }

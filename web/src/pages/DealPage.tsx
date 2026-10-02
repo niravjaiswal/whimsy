@@ -1,6 +1,6 @@
 import { Link, useParams } from 'react-router-dom';
 import { useApi, type Deal, type OtherDate } from '../api';
-import { CityImage, MiniDeal, PriceRange, TierBadge } from '../components/DealCard';
+import { CityImage, MiniDeal, PriceRange, SaveButton, TierBadge } from '../components/DealCard';
 import { PriceChart } from '../components/PriceChart';
 import { ago, dateRange, duration, money, num, pct, shortDate, stopsLabel, time12 } from '../format';
 import { BellIcon } from './Home';
@@ -103,9 +103,12 @@ export function DealPage() {
                   {d.nights ? <span className="muted"> · {d.nights} nights</span> : null}
                 </div>
               </div>
-              <a className="btn btn-primary" href={d.bookingUrl} target="_blank" rel="noreferrer">
-                Book on Google Flights ↗
-              </a>
+              <div className="row">
+                <SaveButton slug={d.slug} />
+                <a className="btn btn-primary" href={d.bookingUrl} target="_blank" rel="noreferrer">
+                  Book on Google Flights ↗
+                </a>
+              </div>
             </div>
             <div className="itin" style={{ marginTop: 8 }}>
               <div>

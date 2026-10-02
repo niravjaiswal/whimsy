@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
+import { useAccount } from '../account';
 import type { Deal } from '../api';
 import { TIER_LABEL, ago, dateRange, duration, money, pct, stopsLabel } from '../format';
 
@@ -57,8 +58,11 @@ export function DealCard({ deal, fresh }: { deal: Deal; fresh?: boolean }) {
         <CityImage src={deal.destination.thumb ?? deal.destination.image} alt="" />
         <div className="dc-badges">
           <TierBadge deal={deal} />
-          <span className="badge" style={{ color: 'var(--text-2)' }}>
-            {ago(deal.foundAt)}
+          <span className="row" style={{ gap: 6 }}>
+            <span className="badge" style={{ color: 'var(--text-2)' }}>
+              {ago(deal.foundAt)}
+            </span>
+            <SaveButton slug={deal.slug} compact />
           </span>
         </div>
         <div className="dc-city">
@@ -118,5 +122,33 @@ export function MiniDeal({ deal }: { deal: Deal }) {
         <span className="good">−{pct(deal.discount)}</span>
       </div>
     </Link>
+  );
+}
+
+/** Heart toggle. Signed out: sends you to sign in, then back here. Hidden when accounts are off. */
+export function SaveButton({ slug, compact }: { slug: string; compact?: boolean }) {
+  const account = useAccount();
+  const nav = useNavigate();
+  const loc = useLocation();
+  if (!account.enabled) return null;
+  const saved = account.isSaved(slug);
+  const onClick = (e: React.MouseEvent) => {
+    e.preventDefault(); // cards are links
+    e.stopPropagation();
+    if (!account.session) return nav(`/signin?next=${encodeURIComponent(loc.pathname + loc.search)}`);
+    void account.toggleSaved(slug);
+  };
+  return (
+    <button
+      type="button"
+      className={`save-btn ${compact ? 'compact' : ''} ${saved ? 'on' : ''}`}
+      onClick={onClick}
+      aria-pressed={saved}
+      aria-label={saved ? 'Remove from saved deals' : 'Save deal'}
+      title={saved ? 'Saved' : 'Save deal'}
+    >
+      {saved ? '♥' : '♡'}
+      {!compact && <span>{saved ? 'Saved' : 'Save'}</span>}
+    </button>
   );
 }
