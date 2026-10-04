@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createAlert, enqueueMatches } from '../server/alerts.js';
 import { config } from '../server/config.js';
 import { recordResult } from '../server/deals.js';
-import { assertPublicUrl, buildMessage, renderEmail, webhookBody } from '../server/notify/channels.js';
+import { agentMailIdempotencyKey, assertPublicUrl, buildMessage, renderEmail, webhookBody } from '../server/notify/channels.js';
 import { flushNotifications } from '../server/notify/notifier.js';
 import { addRoute, fare, memDb } from './helpers.js';
 
@@ -57,6 +57,14 @@ describe('channels', () => {
     await expect(assertPublicUrl('https://127.0.0.1/x')).rejects.toThrow(/private/);
     await expect(assertPublicUrl('https://[::1]/x')).rejects.toThrow(/private/);
     await expect(assertPublicUrl('https://10.1.2.3/x')).rejects.toThrow(/private/);
+  });
+  it('keeps AgentMail idempotency keys within its allowed charset', () => {
+    const valid = /^[A-Za-z0-9._~-]{1,256}$/;
+    expect(agentMailIdempotencyKey('signin-abc_DEF.1~')).toBe('signin-abc_DEF.1~');
+    const deals = agentMailIdempotencyKey('deals-7-12:149.5,13:220');
+    expect(deals).toMatch(valid);
+    expect(agentMailIdempotencyKey('deals-7-12:149.5,13:220')).toBe(deals);
+    expect(agentMailIdempotencyKey('x'.repeat(300))).toMatch(valid);
   });
 });
 

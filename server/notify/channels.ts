@@ -120,9 +120,14 @@ export interface OutgoingEmail {
   idempotencyKey?: string;
 }
 
+/** AgentMail accepts 1–256 chars of `A-Z a-z 0-9 - . _ ~`; hash anything else (stays deterministic). */
+export function agentMailIdempotencyKey(key: string): string {
+  return /^[A-Za-z0-9._~-]{1,256}$/.test(key) ? key : `h-${crypto.createHash('sha256').update(key).digest('hex')}`;
+}
+
 async function sendViaAgentMail(mail: OutgoingEmail): Promise<void> {
   // A stable idempotency key makes the single retry below safe: AgentMail drops duplicates.
-  const key = mail.idempotencyKey ?? crypto.randomUUID();
+  const key = mail.idempotencyKey ? agentMailIdempotencyKey(mail.idempotencyKey) : crypto.randomUUID();
   let lastErr: Error | null = null;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {

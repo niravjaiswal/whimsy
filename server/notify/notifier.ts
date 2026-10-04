@@ -1,4 +1,3 @@
-import crypto from 'node:crypto';
 import { config } from '../config.js';
 import type { DB } from '../db.js';
 import { rowToAlert, type Alert } from '../alerts.js';
@@ -54,7 +53,7 @@ export async function flushNotifications(db: DB, now = Date.now()): Promise<Flus
     // Unconfirmed addresses never get deal emails.
     if (alert.channels.email && alert.email && alert.emailVerified) {
       const key = `deals-${alert.id}-${deals.map((d) => `${d.id}:${d.price}`).join(',')}`;
-      jobs.push(['email', () => sendEmail(db, alert.email!, msg, key.length > 200 ? crypto.createHash('sha256').update(key).digest('hex') : key)]);
+      jobs.push(['email', () => sendEmail(db, alert.email!, msg, key)]);
     }
     if (alert.channels.push) jobs.push(['push', () => sendPush(db, alert.id, msg)]);
     if (alert.channels.ntfy) jobs.push(['ntfy', () => sendNtfy(alert.channels.ntfy!, msg)]);
